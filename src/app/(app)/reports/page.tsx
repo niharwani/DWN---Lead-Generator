@@ -10,8 +10,12 @@ import {
   pageNicheBreakdown,
   pageOverviewMetrics,
   pagePipelineFunnel,
+  pageRegressions,
+  pageResponseTimeStats,
   pageScoreBandBreakdown,
   pageSourceBreakdown,
+  pageStuckLeads,
+  pageVariantComparison,
 } from "@/lib/data";
 import {
   SCORE_BAND_LABEL,
@@ -25,16 +29,31 @@ import {
 export const metadata: Metadata = { title: "Reports" };
 
 export default async function ReportsPage() {
-  const [funnel, sources, niches, bands, cities, campaigns, metrics] =
-    await Promise.all([
-      pagePipelineFunnel(),
-      pageSourceBreakdown(),
-      pageNicheBreakdown(),
-      pageScoreBandBreakdown(),
-      pageCityBreakdown(),
-      pageBestCampaigns(),
-      pageOverviewMetrics(),
-    ]);
+  const [
+    funnel,
+    sources,
+    niches,
+    bands,
+    cities,
+    campaigns,
+    metrics,
+    responseStats,
+    variants,
+    regressions,
+    stuck,
+  ] = await Promise.all([
+    pagePipelineFunnel(),
+    pageSourceBreakdown(),
+    pageNicheBreakdown(),
+    pageScoreBandBreakdown(),
+    pageCityBreakdown(),
+    pageBestCampaigns(),
+    pageOverviewMetrics(),
+    pageResponseTimeStats(),
+    pageVariantComparison(),
+    pageRegressions(10),
+    pageStuckLeads(10),
+  ]);
   const funnelMax = Math.max(1, ...funnel.map((f) => f.count));
 
   const nicheMax = Math.max(1, ...niches.map((n) => n.count));
@@ -214,6 +233,145 @@ export default async function ReportsPage() {
                 </div>
               </div>
             ))}
+          </CardBody>
+        </Card>
+      </div>
+
+      {/* --- Response time + variants ------------------------------------ */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>Response time</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-2 text-sm">
+            <OutcomeRow
+              label="Avg days to reply"
+              value={responseStats.avgDays != null ? responseStats.avgDays.toFixed(1) : "—"}
+            />
+            <OutcomeRow
+              label="Median days to reply"
+              value={responseStats.medianDays != null ? responseStats.medianDays.toFixed(1) : "—"}
+            />
+            <OutcomeRow label="Replies tracked" value={responseStats.totalReplies} />
+            {responseStats.byNiche.length > 0 ? (
+              <div className="pt-2 border-t border-[var(--color-border)]">
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--color-text-subtle)]">
+                  By niche
+                </div>
+                <ul className="space-y-1">
+                  {responseStats.byNiche.slice(0, 5).map((n) => (
+                    <li key={n.niche} className="flex items-center justify-between text-xs text-[var(--color-text-muted)]">
+                      <span className="truncate">{n.niche}</span>
+                      <span className="tabular-nums">
+                        {n.avgDays.toFixed(1)}d
+                        <span className="text-[var(--color-text-subtle)]"> · {n.replies}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Variant A/B</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-2 text-sm">
+            {variants.length === 0 ? (
+              <p className="text-xs text-[var(--color-text-muted)]">
+                No variants yet. Click "A/B pair" on a lead to generate a comparison.
+              </p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="text-[10px] uppercase tracking-wider text-[var(--color-text-subtle)]">
+                  <tr>
+                    <th className="text-left">Variant</th>
+                    <th className="text-right">Sent</th>
+                    <th className="text-right">Replies</th>
+                    <th className="text-right">Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {variants.map((v) => (
+                    <tr key={v.variantLabel}>
+                      <td className="py-1 font-medium">Variant {v.variantLabel}</td>
+                      <td className="py-1 text-right tabular-nums text-[var(--color-text-muted)]">{v.contacted}</td>
+                      <td className="py-1 text-right tabular-nums text-[var(--color-text-muted)]">{v.replied}</td>
+                      <td className="py-1 text-right tabular-nums font-medium">
+                        {(v.replyRate * 100).toFixed(0)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {responseStats.bySentiment.length > 0 ? (
+              <div className="pt-2 border-t border-[var(--color-border)]">
+                <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--color-text-subtle)]">
+                  Reply sentiment
+                </div>
+                <ul className="space-y-0.5">
+                  {responseStats.bySentiment.map((s) => (
+                    <li key={s.sentiment} className="flex items-center justify-between text-xs text-[var(--color-text-muted)]">
+                      <span className="capitalize">{s.sentiment.replace("_", " ")}</span>
+                      <span className="tabular-nums">{s.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Attention needed</CardTitle>
+          </CardHeader>
+          <CardBody className="space-y-3 text-sm">
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--color-text-subtle)]">
+                Stuck leads · last contacted 7+ days ago
+              </div>
+              {stuck.length === 0 ? (
+                <p className="text-xs text-[var(--color-text-muted)]">None — everything is fresh.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {stuck.map(({ lead, daysSinceContact }) => (
+                    <li key={lead.id} className="flex items-center justify-between text-xs">
+                      <Link href={`/leads/${lead.id}`} className="truncate hover:underline">
+                        {lead.businessName}
+                      </Link>
+                      <span className="tabular-nums text-[var(--color-text-muted)]">
+                        {daysSinceContact.toFixed(0)}d
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="pt-2 border-t border-[var(--color-border)]">
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--color-text-subtle)]">
+                Site changes · from re-audit
+              </div>
+              {regressions.length === 0 ? (
+                <p className="text-xs text-[var(--color-text-muted)]">No tracked changes yet. The monthly cron will populate this.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {regressions.map((r) => (
+                    <li key={r.lead.id} className="flex items-center justify-between text-xs">
+                      <Link href={`/leads/${r.lead.id}`} className="truncate hover:underline">
+                        {r.lead.businessName}
+                      </Link>
+                      <span className={`tabular-nums ${r.direction === "regression" ? "text-[var(--color-danger-700)]" : "text-[var(--color-success-700)]"}`}>
+                        {r.before} → {r.after}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </CardBody>
         </Card>
       </div>

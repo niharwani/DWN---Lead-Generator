@@ -29,6 +29,7 @@ import {
   createTaskAction,
   generateBriefAction,
   generateDraftAction,
+  generateDraftVariantsAction,
   logReplyAction,
   markContactedAction,
   runAuditAction,
@@ -883,16 +884,27 @@ function OutreachDraftsSection({
             New draft
           </Button>
         ) : (
-          <ActionButton
-            action={generateDraftAction}
-            hiddenFields={{ leadId }}
-            variant="secondary"
-            size="sm"
-            title="Generate a new outreach draft (AI if ANTHROPIC_API_KEY is set, template otherwise)"
-          >
-            <Sparkles aria-hidden className="h-3.5 w-3.5" />
-            New draft
-          </ActionButton>
+          <div className="flex gap-2">
+            <ActionButton
+              action={generateDraftAction}
+              hiddenFields={{ leadId }}
+              variant="secondary"
+              size="sm"
+              title="Generate a single outreach draft (AI if ANTHROPIC_API_KEY is set, template otherwise)"
+            >
+              <Sparkles aria-hidden className="h-3.5 w-3.5" />
+              New draft
+            </ActionButton>
+            <ActionButton
+              action={generateDraftVariantsAction}
+              hiddenFields={{ leadId }}
+              variant="secondary"
+              size="sm"
+              title="Generate A/B variants (two drafts to compare reply rates)"
+            >
+              A/B pair
+            </ActionButton>
+          </div>
         )}
       </CardHeader>
       <CardBody>
@@ -928,6 +940,22 @@ function OutreachDraftsSection({
                   >
                     {OUTREACH_STATUS_LABEL[d.status]}
                   </Badge>
+                  {d.variantLabel ? (
+                    <Badge variant="outline">Variant {d.variantLabel}</Badge>
+                  ) : null}
+                  {d.replySentiment ? (
+                    <Badge
+                      variant={
+                        d.replySentiment === "interested"
+                          ? "success"
+                          : d.replySentiment === "not_a_fit" || d.replySentiment === "unsubscribe"
+                            ? "muted"
+                            : "accent"
+                      }
+                    >
+                      {d.replySentiment.replace("_", " ")}
+                    </Badge>
+                  ) : null}
                   <span className="text-[11px] text-[var(--color-text-subtle)]">
                     Updated {formatRelative(d.updatedAt)}
                   </span>
@@ -977,14 +1005,25 @@ function OutreachDraftsSection({
                     </ActionButton>
                   ) : null}
                   {d.status === "contacted" ? (
-                    <ActionButton
-                      action={logReplyAction}
-                      hiddenFields={{ draftId: d.id }}
-                      variant="secondary"
-                      size="sm"
-                    >
-                      Log reply
-                    </ActionButton>
+                    <form action={logReplyAction} className="flex flex-wrap items-center gap-1.5">
+                      <input type="hidden" name="draftId" value={d.id} />
+                      <select
+                        name="sentiment"
+                        defaultValue=""
+                        className="h-7 rounded-sm border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 text-[11px]"
+                        aria-label="Reply sentiment"
+                      >
+                        <option value="">Sentiment…</option>
+                        <option value="interested">Interested</option>
+                        <option value="needs_info">Needs info</option>
+                        <option value="not_a_fit">Not a fit</option>
+                        <option value="unsubscribe">Unsubscribe</option>
+                        <option value="unclear">Unclear</option>
+                      </select>
+                      <Button variant="secondary" size="sm" type="submit">
+                        Log reply
+                      </Button>
+                    </form>
                   ) : null}
                   {d.status === "replied" ||
                   d.status === "approved" ||

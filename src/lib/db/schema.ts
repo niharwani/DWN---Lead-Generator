@@ -181,6 +181,18 @@ export const leads = sqliteTable(
       .default(false),
     doNotContactReason: text("do_not_contact_reason"),
     doNotContactAt: text("do_not_contact_at"),
+    lastAuditedAt: text("last_audited_at"),
+    previousWebsiteCondition: text("previous_website_condition", {
+      enum: [
+        "no_website",
+        "inaccessible",
+        "outdated",
+        "weak",
+        "acceptable",
+        "strong",
+        "unknown",
+      ],
+    }),
     createdAt: text("created_at")
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -430,6 +442,11 @@ export const outreachDrafts = sqliteTable(
     needsHumanReview: integer("needs_human_review", { mode: "boolean" })
       .notNull()
       .default(true),
+    variantGroup: text("variant_group"),
+    variantLabel: text("variant_label"),
+    replySentiment: text("reply_sentiment", {
+      enum: ["interested", "needs_info", "not_a_fit", "unsubscribe", "unclear"],
+    }),
     approvedAt: text("approved_at"),
     contactedAt: text("contacted_at"),
     repliedAt: text("replied_at"),

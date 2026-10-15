@@ -6,6 +6,7 @@ import type {
   OutreachChannel,
   OutreachDraft,
   OutreachStatus,
+  ReplySentiment,
 } from "@/lib/demo/types";
 
 export async function listDrafts(
@@ -46,6 +47,8 @@ export type CreateDraftInput = {
   body: string;
   personalizationEvidence?: string[];
   source?: "template" | "ai";
+  variantGroup?: string;
+  variantLabel?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -69,6 +72,8 @@ export async function createDraft(
     status: "needs_review", // spec §11 — every draft starts here
     source: input.source ?? "template",
     needsHumanReview: true,
+    variantGroup: input.variantGroup ?? null,
+    variantLabel: input.variantLabel ?? null,
     createdAt: input.createdAt ?? now,
     updatedAt: input.updatedAt ?? now,
   };
@@ -86,7 +91,8 @@ export async function transitionDraft(
   db: Db,
   ownerId: string,
   id: string,
-  nextStatus: OutreachStatus
+  nextStatus: OutreachStatus,
+  opts?: { replySentiment?: ReplySentiment }
 ): Promise<OutreachDraft | undefined> {
   const now = new Date().toISOString();
   const update: Partial<NewOutreachDraft> = {
@@ -95,7 +101,10 @@ export async function transitionDraft(
   };
   if (nextStatus === "approved") update.approvedAt = now;
   if (nextStatus === "contacted") update.contactedAt = now;
-  if (nextStatus === "replied") update.repliedAt = now;
+  if (nextStatus === "replied") {
+    update.repliedAt = now;
+    if (opts?.replySentiment) update.replySentiment = opts.replySentiment;
+  }
 
   await db
     .update(outreachDrafts)

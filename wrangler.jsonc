@@ -33,7 +33,19 @@
       "database_id": "388e2030-6266-4286-b6e3-f03353d2904c",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  // Cron Triggers call protected HTTP endpoints inside this Worker.
+  // The endpoints verify the X-DWN-Cron-Secret header against the CRON_SECRET
+  // Worker secret before running. Set with:
+  //   npx wrangler secret put CRON_SECRET
+  "triggers": {
+    "crons": [
+      // Daily 09:00 UTC — stale-lead digest (overdue tasks, dormant qualified, stuck contacted)
+      "0 9 * * *",
+      // 1st of month 02:00 UTC — re-audit weak/outdated/acceptable sites, detect regressions
+      "0 2 1 * *"
+    ]
+  }
   // Future bindings (uncomment when the phase that uses them lands):
   // "r2_buckets": [{ "binding": "LEAD_FILES", "bucket_name": "dwn-lead-files" }],
   // "queues": {

@@ -214,6 +214,8 @@ export type UpdateLeadInput = Partial<
   estimatedDealValue?: number;
   lossReason?: string;
   lastContactedAt?: string;
+  lastAuditedAt?: string;
+  previousWebsiteCondition?: WebsiteCondition;
   doNotContactReason?: string;
   flagDoNotContact?: boolean;
 };
@@ -252,6 +254,10 @@ export async function updateLead(
   if (patch.estimatedDealValue !== undefined) update.estimatedDealValue = patch.estimatedDealValue;
   if (patch.lossReason !== undefined) update.lossReason = patch.lossReason ?? null;
   if (patch.lastContactedAt !== undefined) update.lastContactedAt = patch.lastContactedAt;
+  if (patch.lastAuditedAt !== undefined) update.lastAuditedAt = patch.lastAuditedAt;
+  if (patch.previousWebsiteCondition !== undefined) {
+    update.previousWebsiteCondition = patch.previousWebsiteCondition;
+  }
   if (patch.nextActionAt !== undefined) update.nextActionAt = patch.nextActionAt ?? null;
   if (patch.tags != null) update.tags = patch.tags;
   if (patch.score) Object.assign(update, scoreBreakdownToColumns(patch.score));

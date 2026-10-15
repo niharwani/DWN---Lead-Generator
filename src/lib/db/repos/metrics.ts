@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "../client";
 import {
   leads,
@@ -6,7 +6,8 @@ import {
   tasks,
   type Lead as LeadRow,
 } from "../schema";
-import type { PipelineStage } from "@/lib/demo/types";
+import { rowToLead } from "../adapt";
+import type { Lead, PipelineStage, ReplySentiment } from "@/lib/demo/types";
 
 /**
  * Dashboard + reports aggregations. All owner-scoped at the SQL level so the
@@ -213,3 +214,237 @@ export async function getScoreBandBreakdown(
   for (const r of rows) if (r.band) map.set(r.band, r.c);
   return order.map((band) => ({ band, count: map.get(band) ?? 0 }));
 }
+
+/* -------------------------------------------------------------------------
+ * Response-time, variant comparison, regression — automation-wave metrics
+ * ------------------------------------------------------------------------- */
+
+const CONDITION_RANK: Record<NonNullable<LeadRow["websiteCondition"]>, number> = {
+  strong: 5,
+  acceptable: 4,
+  outdated: 3,
+  weak: 2,
+  inaccessible: 1,
+  no_website: 0,
+  unknown: -1,
+};
+
+export type ResponseTimeStats = {
+  totalReplies: number;
+  avgDays: number | null;
+  medianDays: number | null;
+  byNiche: Array<{ niche: string; replies: number; avgDays: number }>;
+  bySentiment: Array<{ sentiment: ReplySentiment; count: number }>;
+};
+
+export async function getResponseTimeStats(
+  db: Db,
+  ownerId: string
+): Promise<ResponseTimeStats> {
+  const rows = await db
+    .select({
+      niche: leads.niche,
+      sentiment: outreachDrafts.replySentiment,
+      contactedAt: outreachDrafts.contactedAt,
+      repliedAt: outreachDrafts.repliedAt,
+    })
+    .from(outreachDrafts)
+    .innerJoin(leads, eq(outreachDrafts.leadId, leads.id))
+    .where(
+      and(
+        eq(outreachDrafts.ownerId, ownerId),
+        isNotNull(outreachDrafts.contactedAt),
+        isNotNull(outreachDrafts.repliedAt)
+      )
+    );
+
+  const diffs: number[] = [];
+  const perNiche = new Map<string, number[]>();
+  const perSentiment = new Map<ReplySentiment, number>();
+  for (const r of rows) {
+    if (!r.contactedAt || !r.repliedAt) continue;
+    const diff =
+      (new Date(r.repliedAt).getTime() - new Date(r.contactedAt).getTime()) /
+      86400_000;
+    if (diff < 0) continue;
+    diffs.push(diff);
+    const list = perNiche.get(r.niche) ?? [];
+    list.push(diff);
+    perNiche.set(r.niche, list);
+    if (r.sentiment) {
+      perSentiment.set(
+        r.sentiment,
+        (perSentiment.get(r.sentiment) ?? 0) + 1
+      );
+    }
+  }
+
+  const avg: number | null =
+    diffs.length > 0
+      ? diffs.reduce((a, b) => a + b, 0) / diffs.length
+      : null;
+  const sorted = [...diffs].sort((a, b) => a - b);
+  let median: number | null = null;
+  if (sorted.length > 0) {
+    const mid = Math.floor(sorted.length / 2);
+    median =
+      sorted.length % 2 === 1
+        ? sorted[mid]!
+        : (sorted[mid - 1]! + sorted[mid]!) / 2;
+  }
+
+  const byNiche = Array.from(perNiche.entries())
+    .map(([niche, list]) => ({
+      niche,
+      replies: list.length,
+      avgDays: list.reduce((a, b) => a + b, 0) / list.length,
+    }))
+    .sort((a, b) => b.replies - a.replies);
+
+  const bySentiment = Array.from(perSentiment.entries())
+    .map(([sentiment, c]) => ({ sentiment, count: c }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    totalReplies: diffs.length,
+    avgDays: avg,
+    medianDays: median,
+    byNiche,
+    bySentiment,
+  };
+}
+
+export type VariantComparison = {
+  variantLabel: string;
+  total: number;
+  contacted: number;
+  replied: number;
+  replyRate: number;
+};
+
+export async function getVariantComparison(
+  db: Db,
+  ownerId: string
+): Promise<VariantComparison[]> {
+  const rows = await db
+    .select({
+      label: outreachDrafts.variantLabel,
+      status: outreachDrafts.status,
+      contactedAt: outreachDrafts.contactedAt,
+      repliedAt: outreachDrafts.repliedAt,
+    })
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.ownerId, ownerId),
+        isNotNull(outreachDrafts.variantLabel)
+      )
+    );
+
+  const buckets = new Map<
+    string,
+    { total: number; contacted: number; replied: number }
+  >();
+  for (const r of rows) {
+    if (!r.label) continue;
+    const b = buckets.get(r.label) ?? { total: 0, contacted: 0, replied: 0 };
+    b.total++;
+    if (r.contactedAt) b.contacted++;
+    if (r.repliedAt) b.replied++;
+    buckets.set(r.label, b);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([label, b]) => ({
+      variantLabel: label,
+      total: b.total,
+      contacted: b.contacted,
+      replied: b.replied,
+      replyRate: b.contacted > 0 ? b.replied / b.contacted : 0,
+    }))
+    .sort((a, b) => a.variantLabel.localeCompare(b.variantLabel));
+}
+
+export type RegressionEntry = {
+  lead: Lead;
+  before: NonNullable<LeadRow["websiteCondition"]>;
+  after: NonNullable<LeadRow["websiteCondition"]>;
+  direction: "regression" | "improvement";
+};
+
+export async function listRegressions(
+  db: Db,
+  ownerId: string,
+  limit = 20
+): Promise<RegressionEntry[]> {
+  const rows = await db
+    .select()
+    .from(leads)
+    .where(
+      and(
+        eq(leads.ownerId, ownerId),
+        isNull(leads.archivedAt),
+        isNotNull(leads.previousWebsiteCondition),
+        ne(leads.previousWebsiteCondition, leads.websiteCondition)
+      )
+    )
+    .orderBy(desc(leads.lastAuditedAt))
+    .limit(limit);
+
+  return rows
+    .map<RegressionEntry>((row) => {
+      const before = (row.previousWebsiteCondition ??
+        "unknown") as NonNullable<LeadRow["websiteCondition"]>;
+      const after = row.websiteCondition;
+      const direction: "regression" | "improvement" =
+        CONDITION_RANK[after] < CONDITION_RANK[before]
+          ? "regression"
+          : "improvement";
+      return { lead: rowToLead(row), before, after, direction };
+    })
+    .sort((a, b) => {
+      if (a.direction === b.direction) return 0;
+      return a.direction === "regression" ? -1 : 1;
+    });
+}
+
+export type StuckLead = {
+  lead: Lead;
+  daysSinceContact: number;
+  stage: PipelineStage;
+};
+
+export async function listStuckLeads(
+  db: Db,
+  ownerId: string,
+  nowIso = new Date().toISOString(),
+  staleDays = 7,
+  limit = 20
+): Promise<StuckLead[]> {
+  const now = new Date(nowIso).getTime();
+  const cutoff = new Date(now - staleDays * 86400_000).toISOString();
+
+  const rows = await db
+    .select()
+    .from(leads)
+    .where(
+      and(
+        eq(leads.ownerId, ownerId),
+        isNull(leads.archivedAt),
+        inArray(leads.pipelineStage, ["contacted", "replied"]),
+        isNotNull(leads.lastContactedAt),
+        lt(leads.lastContactedAt, cutoff)
+      )
+    )
+    .orderBy(leads.lastContactedAt)
+    .limit(limit);
+
+  return rows.map((row) => {
+    const lead = rowToLead(row);
+    const days = row.lastContactedAt
+      ? (now - new Date(row.lastContactedAt).getTime()) / 86400_000
+      : 0;
+    return { lead, daysSinceContact: days, stage: lead.pipelineStage };
+  });
+}
+

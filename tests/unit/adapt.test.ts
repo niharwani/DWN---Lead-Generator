@@ -44,6 +44,8 @@ function baseRow(overrides: Partial<LeadRow> = {}): LeadRow {
     doNotContact: false,
     doNotContactReason: null,
     doNotContactAt: null,
+    lastAuditedAt: null,
+    previousWebsiteCondition: null,
     createdAt: "2026-10-14T00:00:00.000Z",
     updatedAt: "2026-10-14T00:00:00.000Z",
     archivedAt: null,

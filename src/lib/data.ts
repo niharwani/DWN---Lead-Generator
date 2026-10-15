@@ -279,6 +279,30 @@ export async function pageCityBreakdown() {
   return repos.getCityBreakdown(db, owner.id);
 }
 
+export async function pageResponseTimeStats() {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.getResponseTimeStats(db, owner.id);
+}
+
+export async function pageVariantComparison() {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.getVariantComparison(db, owner.id);
+}
+
+export async function pageRegressions(limit = 20) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.listRegressions(db, owner.id, limit);
+}
+
+export async function pageStuckLeads(limit = 20) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.listStuckLeads(db, owner.id, undefined, undefined, limit);
+}
+
 /* -----------------------------------------------------------------
  * Scoring weights
  * ----------------------------------------------------------------- */

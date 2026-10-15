@@ -66,6 +66,7 @@ import type {
   OutreachChannel,
   OutreachStatus,
   PipelineStage,
+  ReplySentiment,
   TaskPriority,
   TaskType,
 } from "@/lib/demo/types";
@@ -212,8 +213,81 @@ export async function createLeadAction(formData: FormData): Promise<void> {
     description: `New lead added via ${input.sourceName ?? "manual"} entry.`,
   });
 
+  if (lead.websiteUrl) {
+    await autoAuditAndScore(db, owner.id, lead.id).catch(() => undefined);
+  }
+
   revalidateAll(lead.id);
   redirect(`/leads/${lead.id}`);
+}
+
+/**
+ * Runs the website audit + lead-score pipeline immediately after a lead
+ * exists with a websiteUrl. Errors are swallowed by the caller because this
+ * is a non-essential enrichment — the lead is still saved either way.
+ */
+async function autoAuditAndScore(
+  db: Awaited<ReturnType<typeof getDb>>,
+  ownerId: string,
+  leadId: string
+): Promise<void> {
+  const lead = await getLead(db, ownerId, leadId);
+  if (!lead?.websiteUrl) return;
+
+  try {
+    assertWithinRateLimit(ownerId, "audit");
+    const { audit, derivedCondition } = await runAudit({
+      leadId: lead.id,
+      requestedUrl: lead.websiteUrl,
+    });
+    await createAudit(db, ownerId, audit);
+    await updateLead(db, ownerId, lead.id, {
+      websiteCondition: derivedCondition,
+      lastAuditedAt: new Date().toISOString(),
+    });
+    await createActivity(db, ownerId, {
+      leadId: lead.id,
+      activityType: "audit_run",
+      title: `Auto-audit completed for ${lead.businessName}`,
+      description:
+        audit.status === "success"
+          ? `${audit.findings.length} findings · condition → ${derivedCondition}`
+          : audit.status,
+      metadata: { auto: true, status: audit.status, derivedCondition },
+    });
+  } catch {
+    // Audit failed (network, SSRF, timeout, rate limit) — not fatal.
+    return;
+  }
+
+  const [latestAudit, services, campaigns, weights] = await Promise.all([
+    getLatestAudit(db, ownerId, leadId),
+    listServiceOfferings(db, ownerId),
+    listCampaigns(db, ownerId),
+    getScoringWeights(db, ownerId),
+  ]);
+  const freshLead = await getLead(db, ownerId, leadId);
+  if (!freshLead || !weights) return;
+  const campaign =
+    campaigns.find(
+      (c) => c.niche === freshLead.niche && (c.status === "active" || c.status === "draft")
+    ) ?? campaigns.find((c) => c.niche === freshLead.niche);
+  const result = scoreLead({
+    lead: freshLead,
+    audit: latestAudit,
+    campaign,
+    services,
+    weights,
+    nowIso: new Date().toISOString(),
+  });
+  await updateLead(db, ownerId, leadId, { score: result });
+  await createActivity(db, ownerId, {
+    leadId,
+    activityType: "score_computed",
+    title: `Auto-scored ${freshLead.businessName}: ${result.total}/100`,
+    description: `band → ${result.band}`,
+    metadata: { auto: true, version: result.version },
+  });
 }
 
 const stageChangeSchema = z.object({
@@ -318,9 +392,12 @@ export async function archiveLeadAction(formData: FormData): Promise<void> {
  * Draft lifecycle
  * ----------------------------------------------------------------- */
 
+const FOLLOW_UP_DELAY_DAYS = 5;
+
 async function transitionDraftWithActivity(
   draftId: string,
-  nextStatus: OutreachStatus
+  nextStatus: OutreachStatus,
+  opts?: { replySentiment?: ReplySentiment }
 ) {
   const owner = await requirePageOwner();
   const db = await getDb();
@@ -337,7 +414,9 @@ async function transitionDraftWithActivity(
     }
   }
 
-  await transitionDraft(db, owner.id, draftId, nextStatus);
+  await transitionDraft(db, owner.id, draftId, nextStatus, {
+    replySentiment: opts?.replySentiment,
+  });
 
   // Stage side-effects
   if (nextStatus === "contacted") {
@@ -345,9 +424,33 @@ async function transitionDraftWithActivity(
       lastContactedAt: new Date().toISOString(),
       pipelineStage: "contacted",
     });
+    const lead = await getLead(db, owner.id, existing.leadId);
+    if (lead) {
+      const dueAt = new Date(Date.now() + FOLLOW_UP_DELAY_DAYS * 86400_000).toISOString();
+      const task = await createTask(db, owner.id, {
+        title: `Follow up with ${lead.businessName}`,
+        taskType: "follow_up",
+        priority: "normal",
+        leadId: lead.id,
+        dueAt,
+        notes: `Auto-scheduled ${FOLLOW_UP_DELAY_DAYS} days after first contact.`,
+      });
+      await updateLead(db, owner.id, existing.leadId, { nextActionAt: dueAt });
+      await createActivity(db, owner.id, {
+        leadId: existing.leadId,
+        activityType: "follow_up_scheduled",
+        title: `Follow-up scheduled: ${lead.businessName}`,
+        description: `Due in ${FOLLOW_UP_DELAY_DAYS} days`,
+        metadata: { taskId: task.id, dueAt },
+      });
+    }
   } else if (nextStatus === "replied") {
+    const stage = opts?.replySentiment === "not_a_fit" ? "not_a_fit" : "replied";
     await updateLead(db, owner.id, existing.leadId, {
-      pipelineStage: "replied",
+      pipelineStage: stage,
+      ...(opts?.replySentiment === "unsubscribe"
+        ? { flagDoNotContact: true, doNotContactReason: "Replied asking to unsubscribe." }
+        : {}),
     });
   }
 
@@ -363,13 +466,16 @@ async function transitionDraftWithActivity(
   const titles: Record<string, string> = {
     draft_approved: "Draft approved",
     contact_logged: "Marked contacted",
-    reply_logged: "Reply logged",
+    reply_logged: opts?.replySentiment
+      ? `Reply logged · ${opts.replySentiment.replace("_", " ")}`
+      : "Reply logged",
   };
   await createActivity(db, owner.id, {
     leadId: existing.leadId,
     activityType,
     title: titles[activityType] ?? `Draft moved to ${nextStatus}`,
     description: existing.subject ?? undefined,
+    metadata: opts?.replySentiment ? { sentiment: opts.replySentiment } : undefined,
   });
 
   revalidateAll(existing.leadId);
@@ -387,10 +493,22 @@ export async function markContactedAction(formData: FormData): Promise<void> {
   await transitionDraftWithActivity(id, "contacted");
 }
 
+const sentimentValues = [
+  "interested",
+  "needs_info",
+  "not_a_fit",
+  "unsubscribe",
+  "unclear",
+] as const;
+
 export async function logReplyAction(formData: FormData): Promise<void> {
   const id = String(formData.get("draftId") ?? "").trim();
   if (!id) throw new Error("draftId is required.");
-  await transitionDraftWithActivity(id, "replied");
+  const rawSentiment = String(formData.get("sentiment") ?? "").trim();
+  const replySentiment = (sentimentValues as readonly string[]).includes(rawSentiment)
+    ? (rawSentiment as ReplySentiment)
+    : undefined;
+  await transitionDraftWithActivity(id, "replied", { replySentiment });
 }
 
 export async function archiveDraftAction(formData: FormData): Promise<void> {
@@ -942,6 +1060,121 @@ export async function generateDraftAction(formData: FormData): Promise<void> {
     title: `Draft created for ${lead.businessName}`,
     description: `${draft.source === "ai" ? "AI" : "Template"} · channel ${draft.channel}${aiFallbackReason ? " · template fallback" : ""}`,
     metadata: { draftId: persisted.id, source: draft.source },
+  });
+
+  revalidateAll(lead.id);
+}
+
+/* -----------------------------------------------------------------
+ * A/B variant generation
+ * -----------------------------------------------------------------
+ * Produces two drafts for the same lead with a shared `variantGroup` UUID
+ * and labels "A"/"B". If Anthropic is configured, variant A is template and
+ * variant B is AI (two angles). Otherwise both are template with different
+ * channel-anchored styles so Nihar still has a comparison to A/B test.
+ */
+
+export async function generateDraftVariantsAction(
+  formData: FormData
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, generateDraftSchema);
+
+  const lead = await getLead(db, owner.id, input.leadId);
+  if (!lead) throw new Error("Lead not found.");
+  if (lead.doNotContact.flagged) {
+    throw new Error("This lead is marked do-not-contact. Drafts cannot be created.");
+  }
+
+  const [audit, brief, services] = await Promise.all([
+    getLatestAudit(db, owner.id, lead.id),
+    getLatestBrief(db, owner.id, lead.id),
+    listServiceOfferings(db, owner.id),
+  ]);
+
+  const env = await getRuntimeEnv();
+  const variantGroup = crypto.randomUUID();
+
+  const variantA = buildTemplateDraft({
+    lead,
+    brief,
+    audit,
+    services,
+    channel: input.channel as OutreachChannel | undefined,
+  });
+
+  let variantB;
+  let variantBSource: "template" | "ai" = "template";
+  let aiFallbackReason: string | undefined;
+
+  if (env.ANTHROPIC_API_KEY) {
+    try {
+      assertWithinRateLimit(owner.id, "ai_draft");
+      variantB = await buildAiDraft(
+        {
+          lead,
+          brief,
+          audit,
+          services,
+          channel: input.channel as OutreachChannel | undefined,
+        },
+        env
+      );
+      variantBSource = "ai";
+    } catch (err) {
+      if (err instanceof RateLimitError) throw err;
+      aiFallbackReason = (err as Error).message;
+    }
+  }
+
+  if (!variantB) {
+    const alternateChannel: OutreachChannel =
+      variantA.channel === "email" ? "contact_form" : "email";
+    variantB = buildTemplateDraft({
+      lead,
+      brief,
+      audit,
+      services,
+      channel: alternateChannel,
+    });
+  }
+
+  const evidenceB = aiFallbackReason
+    ? [...variantB.personalizationEvidence, `AI fallback: ${aiFallbackReason}`]
+    : variantB.personalizationEvidence;
+
+  const createdA = await createDraft(db, owner.id, {
+    leadId: lead.id,
+    channel: variantA.channel,
+    subject: variantA.subject ?? undefined,
+    body: variantA.body,
+    personalizationEvidence: variantA.personalizationEvidence,
+    source: variantA.source,
+    variantGroup,
+    variantLabel: "A",
+  });
+  const createdB = await createDraft(db, owner.id, {
+    leadId: lead.id,
+    channel: variantB.channel,
+    subject: variantB.subject ?? undefined,
+    body: variantB.body,
+    personalizationEvidence: evidenceB,
+    source: variantBSource,
+    variantGroup,
+    variantLabel: "B",
+  });
+
+  await createActivity(db, owner.id, {
+    leadId: lead.id,
+    activityType: "draft_created",
+    title: `A/B variants created for ${lead.businessName}`,
+    description: `A: ${variantA.source} · B: ${variantBSource}${aiFallbackReason ? " (fallback)" : ""}`,
+    metadata: {
+      variantGroup,
+      draftIdA: createdA.id,
+      draftIdB: createdB.id,
+    },
   });
 
   revalidateAll(lead.id);

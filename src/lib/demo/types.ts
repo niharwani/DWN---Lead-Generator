@@ -127,6 +127,13 @@ export type OutreachStatus =
   | "replied"
   | "archived";
 
+export type ReplySentiment =
+  | "interested"
+  | "needs_info"
+  | "not_a_fit"
+  | "unsubscribe"
+  | "unclear";
+
 export type OutreachDraft = {
   id: string;
   leadId: string;
@@ -136,6 +143,9 @@ export type OutreachDraft = {
   body: string;
   personalizationEvidence: string[];
   status: OutreachStatus;
+  variantGroup?: string;
+  variantLabel?: string;
+  replySentiment?: ReplySentiment;
   approvedAt?: string;
   contactedAt?: string;
   repliedAt?: string;
@@ -164,6 +174,8 @@ export type Lead = {
   sourceExternalId?: string;
   sourceLastCheckedAt?: string;
   websiteCondition: WebsiteCondition;
+  previousWebsiteCondition?: WebsiteCondition;
+  lastAuditedAt?: string;
   pipelineStage: PipelineStage;
   score?: ScoreBreakdown;
   estimatedDealValue?: number;
@@ -229,6 +241,7 @@ export type ActivityType =
   | "stage_changed"
   | "note_added"
   | "audit_run"
+  | "audit_rerun"
   | "score_computed"
   | "draft_created"
   | "draft_approved"
@@ -236,7 +249,9 @@ export type ActivityType =
   | "reply_logged"
   | "meeting_booked"
   | "proposal_sent"
-  | "outcome_recorded";
+  | "outcome_recorded"
+  | "follow_up_scheduled"
+  | "digest_generated";
 
 export type Activity = {
   id: string;

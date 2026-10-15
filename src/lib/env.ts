@@ -17,6 +17,10 @@ const EXPOSED_KEYS = [
   "ANTHROPIC_MODEL",
   "PAGESPEED_API_KEY",
   "DEV_OWNER_EMAIL",
+  "GMAIL_CLIENT_ID",
+  "GMAIL_CLIENT_SECRET",
+  "GMAIL_REDIRECT_URI",
+  "CRON_SECRET",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

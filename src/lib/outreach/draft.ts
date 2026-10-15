@@ -57,18 +57,110 @@ function pickService(
   return services.find((s) => s.isActive) ?? services[0];
 }
 
+/**
+ * Picks the single most compelling, specific, numeric observation from an
+ * audit to lead the outreach body with. Returns null when the audit is
+ * missing, not successful, or has no notable finding to cite. The ordering
+ * mirrors the spec priority: concrete numeric metrics beat qualitative
+ * findings, and only the top signal is surfaced so the opener stays sharp.
+ */
+export function pickHeadlineObservation(
+  audit: WebsiteAudit | undefined
+): { headline: string; evidenceLine: string } | null {
+  if (!audit || audit.status !== "success") return null;
+
+  const findings = audit.findings;
+  const findingByCode = (patterns: string[]) =>
+    findings.find((f) => patterns.some((p) => f.code === p || f.code.includes(p)));
+
+  const weight = audit.metrics?.pageWeightBytes;
+  if (typeof weight === "number" && weight > 2_500_000) {
+    const mb = (weight / 1_000_000).toFixed(1);
+    return {
+      headline: `Your homepage weighs ${mb} MB — most sites in your range come in around 1.5 MB, which affects first paint on mobile.`,
+      evidenceLine: `Audit metric cited: pageWeightBytes=${weight} → ${mb} MB`,
+    };
+  }
+
+  const https = findingByCode(["missing_https", "no_https"]);
+  if (https) {
+    return {
+      headline:
+        "Your site is still served over HTTP — browsers now show visitors a 'Not secure' warning, which measurably hurts form conversions.",
+      evidenceLine: `Audit finding cited: ${https.code}`,
+    };
+  }
+
+  const viewport = findingByCode(["missing_viewport"]);
+  if (viewport) {
+    return {
+      headline:
+        "Your homepage is missing a mobile viewport tag, so it loads at desktop width on phones — likely why mobile users bounce.",
+      evidenceLine: `Audit finding cited: ${viewport.code}`,
+    };
+  }
+
+  const contact = findingByCode(["missing_contact_path", "weak_contact_path"]);
+  if (contact) {
+    return {
+      headline:
+        "We couldn't find a clear way to contact you from your site — no visible email, phone, or contact page in the first scroll.",
+      evidenceLine: `Audit finding cited: ${contact.code}`,
+    };
+  }
+
+  const alt = findingByCode(["images_without_alt", "missing_alt_text"]);
+  if (alt?.evidence) {
+    const match = alt.evidence.match(/\d+/);
+    if (match) {
+      const count = Number(match[0]);
+      return {
+        headline: `${count} images on your homepage are missing alt text, which blocks screen readers and hurts search ranking.`,
+        evidenceLine: `Audit finding cited: ${alt.code} (${count} images)`,
+      };
+    }
+  }
+
+  const load = audit.metrics?.loadMs;
+  if (typeof load === "number" && load > 4000) {
+    const s = (load / 1000).toFixed(1);
+    return {
+      headline: `Your homepage took ${s}s to respond when we tested it — that's past the 3s mark where most mobile visitors leave.`,
+      evidenceLine: `Audit metric cited: loadMs=${load} → ${s}s`,
+    };
+  }
+
+  return null;
+}
+
+function pickFallbackFinding(audit: WebsiteAudit): string | null {
+  const high = audit.findings.find((f) => f.severity === "high");
+  if (high) return high.title;
+  const medium = audit.findings.find((f) => f.severity === "medium");
+  if (medium) return medium.title;
+  return null;
+}
+
 export function buildTemplateDraft(input: BuildDraftInput): DraftOutput {
   const channel = pickChannel(input.lead, input.channel);
   const studio = input.studioName ?? DEFAULT_STUDIO;
   const service = pickService(input.brief, input.services);
   const observations = input.brief?.observations ?? [];
-  const topObservation = observations[0]?.observation;
-  const auditNote =
-    input.audit?.status === "success"
-      ? `We ran a quick public audit of ${input.lead.websiteUrl ?? "your site"} and noticed ${input.audit.findings.length} items worth discussing.`
-      : input.lead.websiteUrl
-        ? `We took a look at ${input.lead.websiteUrl} to prepare for this note.`
-        : `We came across ${input.lead.businessName} and wanted to introduce ourselves.`;
+  const briefObservation = observations[0]?.observation;
+  const headline = pickHeadlineObservation(input.audit);
+
+  let auditNote: string;
+  if (headline) {
+    auditNote = headline.headline;
+  } else if (input.audit?.status === "success") {
+    const fallbackFinding = pickFallbackFinding(input.audit);
+    const base = `We ran a quick public audit of ${input.lead.websiteUrl ?? "your site"} and noticed ${input.audit.findings.length} items worth discussing.`;
+    auditNote = fallbackFinding ? `${base} The one that stood out: ${fallbackFinding}.` : base;
+  } else if (input.lead.websiteUrl) {
+    auditNote = `We took a look at ${input.lead.websiteUrl} to prepare for this note.`;
+  } else {
+    auditNote = `We came across ${input.lead.businessName} and wanted to introduce ourselves.`;
+  }
 
   const opportunity =
     input.brief?.possibleOpportunity ??
@@ -85,7 +177,7 @@ export function buildTemplateDraft(input: BuildDraftInput): DraftOutput {
     `Hi ${input.lead.businessName} team,`,
     "",
     auditNote,
-    topObservation ? `In particular: ${topObservation}` : null,
+    briefObservation ? `In particular: ${briefObservation}` : null,
     "",
     opportunity,
     service?.valueProposition
@@ -103,6 +195,7 @@ export function buildTemplateDraft(input: BuildDraftInput): DraftOutput {
   if (input.lead.websiteUrl) evidence.push(`Website on file: ${input.lead.websiteUrl}`);
   if (input.audit?.status === "success")
     evidence.push(`Audit ${input.audit.auditVersion}: ${input.audit.findings.length} findings`);
+  if (headline) evidence.push(headline.evidenceLine);
   if (input.brief) evidence.push(`Brief confidence: ${input.brief.confidence}`);
   if (service) evidence.push(`Matched service: ${service.name}`);
 
@@ -139,6 +232,7 @@ export async function buildAiDraft(
   const channel = pickChannel(input.lead, input.channel);
   const service = pickService(input.brief, input.services);
   const studio = input.studioName ?? DEFAULT_STUDIO;
+  const headline = pickHeadlineObservation(input.audit);
 
   const context = {
     studio,
@@ -170,6 +264,7 @@ export async function buildAiDraft(
               severity: f.severity,
               description: f.description,
             })),
+            topObservation: headline?.headline ?? null,
           }
         : null,
   };
@@ -177,6 +272,7 @@ export async function buildAiDraft(
   const systemPrompt =
     "You draft short, grounded, personalized outreach notes for a small design/software studio. " +
     "Rules: never fabricate facts not present in the provided context; cite at least one concrete observation; " +
+    "when audit.topObservation is present you MUST use that exact specific observation in the first sentence of the body, verbatim or very lightly rephrased, preserving every number it contains; " +
     "keep the body under 180 words; sign off from the studio name provided; be respectful and offer an easy opt-out. " +
     "Return ONLY valid JSON matching the schema: " +
     '{ "subject": string|null, "body": string, "personalization_evidence": string[] }. ' +
