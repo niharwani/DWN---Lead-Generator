@@ -1,0 +1,7 @@
+# pnpm v11 config. Not actually a workspace — this file just approves which
+# post-install scripts may run.
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+  workerd: true

@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# OpenNext / Cloudflare build artifacts
+.open-next/
+.wrangler/
+
+# Local env + secrets — never commit these
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# TypeScript incremental
+*.tsbuildinfo
+
+# Cloudflare type generation
+cloudflare-env.d.ts
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+playwright-report/
+test-results/
+
+# Generated seed SQL (produced by scripts/generate-seed.ts)
+scripts/seed.sql

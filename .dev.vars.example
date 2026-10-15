@@ -1,0 +1,32 @@
+# =============================================================================
+# DWN Lead Engine — Wrangler local secrets template
+# =============================================================================
+# Copy this file to `.dev.vars` for local development. `.dev.vars` is gitignored.
+# For production, use `wrangler secret put <KEY>` instead — never commit real
+# secrets.
+#
+# All of these are OPTIONAL. The app runs in demo mode without any of them.
+# =============================================================================
+
+# --- Google Places API (optional, Phase 6) ------------------------------------
+# Server-side only. Required to enable the Google Places discovery adapter.
+# Create at https://console.cloud.google.com/ with Places API enabled and
+# billing linked. Field masks + quotas enforced in src/lib/sources/google-places.ts.
+# GOOGLE_PLACES_API_KEY=
+
+# --- AI provider (optional, Phase 7) ------------------------------------------
+# Server-side only. Enables AI-assisted opportunity briefs and outreach drafts.
+# If unset, the app falls back to deterministic templates.
+# AI_PROVIDER=anthropic
+# AI_MODEL=claude-sonnet-4-6
+# ANTHROPIC_API_KEY=
+
+# --- PageSpeed Insights (optional, Phase 4) -----------------------------------
+# Server-side only. Enables real-user-ish perf metrics in the website audit.
+# Baseline audit works without this using the bounded HTML fetcher.
+# PAGESPEED_API_KEY=
+
+# --- Scheduled jobs (optional, future) ----------------------------------------
+# Shared secret for authenticating Cron Trigger invocations when cron endpoints
+# are introduced. Not used in Phase 0.
+# CRON_SECRET=

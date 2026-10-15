@@ -1,0 +1,46 @@
+/**
+ * DWN Lead Engine — Cloudflare Workers configuration.
+ *
+ * - Deploys the Next.js app via @opennextjs/cloudflare (entry: `.open-next/worker.js`).
+ * - `nodejs_compat` enables Node built-ins the Next runtime relies on.
+ * - `global_fetch_strictly_public` is defense-in-depth for SSRF: the runtime
+ *   itself refuses to resolve fetch() to private/loopback IPs. Application-layer
+ *   SSRF checks still run in src/lib/audit/ssrf.ts.
+ *
+ * Replace the placeholder database_id after creating the D1 database:
+ *   pnpm wrangler d1 create dwn_lead_engine
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dwn-lead-engine",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2024-12-30",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dwn_lead_engine",
+      "database_id": "388e2030-6266-4286-b6e3-f03353d2904c",
+      "migrations_dir": "migrations"
+    }
+  ]
+  // Future bindings (uncomment when the phase that uses them lands):
+  // "r2_buckets": [{ "binding": "LEAD_FILES", "bucket_name": "dwn-lead-files" }],
+  // "queues": {
+  //   "producers": [
+  //     { "binding": "AUDIT_QUEUE", "queue": "dwn-audit-queue" },
+  //     { "binding": "DISCOVERY_QUEUE", "queue": "dwn-discovery-queue" }
+  //   ]
+  // },
+  // "kv_namespaces": [{ "binding": "APP_CACHE", "id": "..." }]
+}
