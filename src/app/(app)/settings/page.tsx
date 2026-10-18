@@ -18,6 +18,17 @@ import { Field, Input, Textarea } from "@/components/ui/input";
 import { pageListServices, pageScoringWeights } from "@/lib/data";
 import { saveScoringWeightsAction, resetScoringWeightsAction } from "@/lib/actions";
 import { FACTOR_LABELS, type ScoreFactorCode } from "@/lib/scoring/engine";
+import { requirePageOwner } from "@/lib/data";
+import { getDb } from "@/lib/db/client";
+import { listFactors } from "@/lib/db/repos/custom-factors";
+import { listSignals } from "@/lib/db/repos/custom-signals";
+import { getProfileSettings } from "@/lib/db/repos/workspaces";
+import { getSetting } from "@/lib/db/repos/settings";
+import { BrandingSection } from "./_sections/branding";
+import { CustomFactorsSection } from "./_sections/custom-factors";
+import { CustomSignalsSection } from "./_sections/custom-signals";
+import { TemplatesSection } from "./_sections/templates";
+import type { DraftTemplateData } from "@/lib/actions";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -27,14 +38,32 @@ export default async function SettingsPage() {
     pageScoringWeights(),
   ]);
 
+  // Phase C data
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const [customFactors, customSignals, profile, templatesRaw] = await Promise.all([
+    listFactors(db, owner.id),
+    listSignals(db, owner.id),
+    getProfileSettings(db, owner.id),
+    getSetting<DraftTemplateData[]>(db, owner.id, "templates/v1"),
+  ]);
+
   return (
     <>
       <PageHeader
         title="Settings"
-        description="Business profile, scoring, and integrations. API keys never render here — only their configured / missing status."
+        description="Workspace, scoring, templates, and integrations. API keys never render here — only their configured / missing status."
       />
 
       <div className="space-y-6">
+        {/* --- Branding (Phase C) -------------------------------------- */}
+        <BrandingSection
+          initialName={profile.studioName ?? ""}
+          initialLogoUrl={profile.logoUrl ?? ""}
+          initialAccentColor={profile.accentColor ?? ""}
+          initialPitch={profile.pitch ?? ""}
+        />
+
         {/* --- Business profile ---------------------------------------- */}
         <SettingsSection
           icon={<Building2 aria-hidden className="h-4 w-4" />}
@@ -43,26 +72,27 @@ export default async function SettingsPage() {
         >
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Studio name">
-              <Input defaultValue="Design with Nihar" />
+              <Input defaultValue={profile.studioName ?? ""} name="studioName" />
             </Field>
             <Field label="Public website">
-              <Input defaultValue="https://dwn-site.pages.dev/" />
+              <Input defaultValue={profile.publicWebsite ?? ""} name="publicWebsite" />
             </Field>
             <Field label="Default city" hint="Discovery falls back to this.">
-              <Input defaultValue="Mumbai" />
+              <Input defaultValue={profile.defaultCity ?? ""} name="defaultCity" />
             </Field>
             <Field label="Default currency">
-              <Input defaultValue="INR" />
+              <Input defaultValue={profile.defaultCurrency ?? "INR"} name="defaultCurrency" />
             </Field>
             <Field
               label="Short pitch"
               className="sm:col-span-2"
               hint="Appears as the fallback value proposition on draft templates."
             >
-              <Textarea defaultValue="A small studio in Mumbai focused on websites, software, and automation. We work with brands and businesses who care about the details." />
+              <Textarea defaultValue={profile.pitch ?? ""} name="pitch" />
             </Field>
           </div>
           <div className="mt-3 flex justify-end">
+            {/* TODO: wire up saveProfileAction when Phase C profile form action is added */}
             <Button variant="primary" size="sm">
               Save profile
             </Button>
@@ -72,7 +102,7 @@ export default async function SettingsPage() {
         {/* --- Services -------------------------------------------------- */}
         <SettingsSection
           icon={<Package aria-hidden className="h-4 w-4" />}
-          title="Services & offers"
+          title="Services &amp; offers"
           description="Edit the service list used for fit matching. Not hardcoded — add, hide, or reorder."
         >
           <ul className="divide-y divide-[var(--color-border)]">
@@ -113,6 +143,9 @@ export default async function SettingsPage() {
             </Button>
           </div>
         </SettingsSection>
+
+        {/* --- Templates (Phase C) ------------------------------------- */}
+        <TemplatesSection initialTemplates={templatesRaw ?? []} />
 
         {/* --- Scoring weights ------------------------------------------ */}
         <SettingsSection
@@ -178,6 +211,12 @@ export default async function SettingsPage() {
             </div>
           </form>
         </SettingsSection>
+
+        {/* --- Custom scoring factors (Phase C) ------------------------- */}
+        <CustomFactorsSection initialFactors={customFactors} />
+
+        {/* --- Custom audit signals (Phase C) --------------------------- */}
+        <CustomSignalsSection initialSignals={customSignals} />
 
         {/* --- Integrations --------------------------------------------- */}
         <SettingsSection
@@ -247,7 +286,7 @@ export default async function SettingsPage() {
               <Input type="number" defaultValue={5} />
             </Field>
             <Field label="User agent" className="sm:col-span-3">
-              <Input defaultValue="DWN-Lead-Engine/0.1 (+https://dwn-site.pages.dev/)" />
+              <Input defaultValue="Lead-Engine/0.1 (audit bot; +https://getleadengine.com/)" />
             </Field>
           </div>
           <p className="mt-3 flex items-start gap-1.5 text-[11px] text-[var(--color-text-subtle)]">
@@ -261,7 +300,7 @@ export default async function SettingsPage() {
 
         <p className="pt-2 text-[11px] text-[var(--color-text-subtle)]">
           Users are responsible for complying with applicable laws, provider
-          terms, and outreach rules. The app's design encourages human-approved
+          terms, and outreach rules. The app&apos;s design encourages human-approved
           outreach only — it does not provide blanket legal-compliance
           guarantees.
         </p>

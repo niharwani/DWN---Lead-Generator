@@ -21,7 +21,7 @@ export const DEFAULT_FETCH_OPTIONS = {
   timeoutMs: 10_000,
   maxBytes: 2_000_000, // 2 MB
   maxRedirects: 5,
-  userAgent: "DWN-Lead-Engine/0.1 (+https://dwn-site.pages.dev/)",
+  userAgent: "Lead-Engine/0.1 (+https://getleadengine.com/)",
 } as const;
 
 export type FetchOptions = typeof DEFAULT_FETCH_OPTIONS;

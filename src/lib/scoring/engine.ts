@@ -84,7 +84,7 @@ export const FACTOR_LABELS: Record<ScoreFactorCode, string> = {
   missing_https: "Site served over HTTP, not HTTPS",
   heavy_page: "Homepage is unusually heavy",
   niche_match: "Target niche match",
-  service_fit: "Strong fit with a DWN service",
+  service_fit: "Strong fit with a service offering",
   useful_contact_path: "Useful public contact path",
   low_evidence_penalty: "Low evidence confidence penalty",
   strong_site_penalty: "Already has a strong site (nothing to improve)",
@@ -106,6 +106,12 @@ export type ScoreInputs = {
    * production wall-clock behaviour should pass `new Date().toISOString()`.
    */
   nowIso?: string;
+  /**
+   * Optional pre-evaluated custom factor entries to append to the breakdown
+   * before clamping. Produced by `evaluateCustomFactors()` in custom-factors.ts.
+   * When omitted, the score is identical to the pre-Phase-C result.
+   */
+  customFactors?: ScoreFactor[];
 };
 
 export type ScoreResult = ScoreBreakdown & {
@@ -170,6 +176,14 @@ export function scoreLead(inputs: ScoreInputs): ScoreResult {
   evaluateCampaignFactors(inputs, add);
   evaluateContactFactors(inputs, add);
   evaluateConfidencePenalty(inputs, confidence, add);
+
+  // Append custom factors provided by the caller (from evaluateCustomFactors).
+  // These are pre-evaluated — we just push them into the fired array.
+  if (inputs.customFactors && inputs.customFactors.length > 0) {
+    for (const cf of inputs.customFactors) {
+      fired.push(cf);
+    }
+  }
 
   // Order factors by magnitude descending so the UI puts the most impactful
   // bullet at the top. Stable ordering falls back to code name.

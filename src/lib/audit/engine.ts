@@ -22,6 +22,12 @@ export type RunAuditInput = {
   leadId: string;
   requestedUrl: string;
   options?: Partial<FetchOptions>;
+  /**
+   * Optional custom audit signals to evaluate alongside the 8 baseline checks.
+   * Pass the result of `evaluateCustomSignals()` from custom-signals.ts.
+   * When omitted, only the baseline checks run (pre-Phase-C behaviour).
+   */
+  customSignals?: AuditFinding[];
 };
 
 export type AuditRunResult = {
@@ -87,13 +93,19 @@ export async function runAudit(input: RunAuditInput): Promise<AuditRunResult> {
     };
   }
 
-  const findings = runAllChecks(doc, {
+  const baselineFindings = runAllChecks(doc, {
     finalUrl: fetched.finalUrl,
     requestedUrl: input.requestedUrl,
     html: fetched.html,
     bodyBytes: fetched.bodyBytes,
     elapsedMs: fetched.elapsedMs,
   });
+
+  // Append pre-evaluated custom signals (from evaluateCustomSignals) after baselines.
+  const findings: AuditFinding[] =
+    input.customSignals && input.customSignals.length > 0
+      ? [...baselineFindings, ...input.customSignals]
+      : baselineFindings;
 
   const derivedCondition = deriveWebsiteCondition(findings);
   const partial = fetched.redirectChain.length > 1 ? true : false;

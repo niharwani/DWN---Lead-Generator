@@ -19,6 +19,7 @@ import type {
   ServiceOffering,
   WebsiteAudit,
 } from "@/lib/demo/types";
+import { substitute, buildContext } from "@/lib/variables/registry";
 
 export type BuildDraftInput = {
   lead: Lead;
@@ -27,6 +28,18 @@ export type BuildDraftInput = {
   services: ServiceOffering[];
   channel?: OutreachChannel;
   studioName?: string;
+  /**
+   * Optional pre-rendered template string. When provided, the body is produced
+   * by substituting variables from the registry rather than the hard-coded
+   * template strings below. The hard-coded template is still the fallback.
+   */
+  templateBody?: string;
+  /**
+   * Optional template string for the email subject. Substituted via registry.
+   */
+  templateSubject?: string;
+  /** Custom workspace variables, passed through to the registry. */
+  customVars?: Record<string, string>;
 };
 
 export type DraftOutput = {
@@ -37,7 +50,7 @@ export type DraftOutput = {
   source: "template" | "ai";
 };
 
-const DEFAULT_STUDIO = "Design with Nihar";
+const DEFAULT_STUDIO = "Your Studio";
 
 function pickChannel(lead: Lead, requested?: OutreachChannel): OutreachChannel {
   if (requested) return requested;
@@ -149,47 +162,73 @@ export function buildTemplateDraft(input: BuildDraftInput): DraftOutput {
   const briefObservation = observations[0]?.observation;
   const headline = pickHeadlineObservation(input.audit);
 
-  let auditNote: string;
-  if (headline) {
-    auditNote = headline.headline;
-  } else if (input.audit?.status === "success") {
-    const fallbackFinding = pickFallbackFinding(input.audit);
-    const base = `We ran a quick public audit of ${input.lead.websiteUrl ?? "your site"} and noticed ${input.audit.findings.length} items worth discussing.`;
-    auditNote = fallbackFinding ? `${base} The one that stood out: ${fallbackFinding}.` : base;
-  } else if (input.lead.websiteUrl) {
-    auditNote = `We took a look at ${input.lead.websiteUrl} to prepare for this note.`;
+  // Build variable context for registry-based substitutions
+  const varCtx = buildContext({
+    lead: input.lead,
+    studioName: studio,
+    workspaceName: studio,
+    audit: input.audit,
+    brief: input.brief ? { recommendedService: input.brief.recommendedService } : undefined,
+    customVars: input.customVars,
+  });
+
+  // --- Subject ---
+  let subject: string | null;
+  if (input.templateSubject) {
+    const { output } = substitute(input.templateSubject, varCtx);
+    subject = channel === "email" ? output : null;
   } else {
-    auditNote = `We came across ${input.lead.businessName} and wanted to introduce ourselves.`;
+    subject =
+      channel === "email"
+        ? `Quick note for ${input.lead.businessName} from ${studio}`
+        : null;
   }
 
-  const opportunity =
-    input.brief?.possibleOpportunity ??
-    (service
-      ? `We think ${service.name.toLowerCase()} could help you move faster.`
-      : "We'd love to understand what you're working on.");
+  // --- Body ---
+  let body: string;
+  if (input.templateBody) {
+    // Registry-based path: caller provided a custom template
+    const { output } = substitute(input.templateBody, varCtx);
+    body = output;
+  } else {
+    // Hard-coded template path (original behaviour — unchanged for regression safety)
+    let auditNote: string;
+    if (headline) {
+      auditNote = headline.headline;
+    } else if (input.audit?.status === "success") {
+      const fallbackFinding = pickFallbackFinding(input.audit);
+      const base = `We ran a quick public audit of ${input.lead.websiteUrl ?? "your site"} and noticed ${input.audit.findings.length} items worth discussing.`;
+      auditNote = fallbackFinding ? `${base} The one that stood out: ${fallbackFinding}.` : base;
+    } else if (input.lead.websiteUrl) {
+      auditNote = `We took a look at ${input.lead.websiteUrl} to prepare for this note.`;
+    } else {
+      auditNote = `We came across ${input.lead.businessName} and wanted to introduce ourselves.`;
+    }
 
-  const subject =
-    channel === "email"
-      ? `Quick note for ${input.lead.businessName} from ${studio}`
-      : null;
+    const opportunity =
+      input.brief?.possibleOpportunity ??
+      (service
+        ? `We think ${service.name.toLowerCase()} could help you move faster.`
+        : "We'd love to understand what you're working on.");
 
-  const body = [
-    `Hi ${input.lead.businessName} team,`,
-    "",
-    auditNote,
-    briefObservation ? `In particular: ${briefObservation}` : null,
-    "",
-    opportunity,
-    service?.valueProposition
-      ? `A bit about us: ${service.valueProposition}`
-      : null,
-    "",
-    "If this feels off, no worries at all — I won't follow up again unless you reply.",
-    "",
-    `— ${studio}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+    body = [
+      `Hi ${input.lead.businessName} team,`,
+      "",
+      auditNote,
+      briefObservation ? `In particular: ${briefObservation}` : null,
+      "",
+      opportunity,
+      service?.valueProposition
+        ? `A bit about us: ${service.valueProposition}`
+        : null,
+      "",
+      "If this feels off, no worries at all — I won't follow up again unless you reply.",
+      "",
+      `— ${studio}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
 
   const evidence: string[] = [];
   if (input.lead.websiteUrl) evidence.push(`Website on file: ${input.lead.websiteUrl}`);

@@ -1469,3 +1469,295 @@ function buildDemoLeads(
     tags: ["Demo"],
   }));
 }
+
+/* -----------------------------------------------------------------
+ * Phase C — Niche-agnostic customization actions
+ * -----------------------------------------------------------------
+ * All appended below. No existing function is modified above.
+ */
+
+import {
+  listFactors,
+  createFactor,
+  updateFactor,
+  deleteFactor,
+} from "@/lib/db/repos/custom-factors";
+import {
+  listSignals,
+  createSignal,
+  updateSignal,
+  deleteSignal,
+} from "@/lib/db/repos/custom-signals";
+import {
+  getCustomVariables,
+  setCustomVariable,
+  deleteCustomVariable,
+} from "@/lib/variables/custom";
+import { substitute, buildContext, KNOWN_VARIABLE_KEYS } from "@/lib/variables/registry";
+import {
+  updateBranding as repoBranding,
+  getProfileSettings,
+  setProfileSettings,
+} from "@/lib/db/repos/workspaces";
+import { getSetting, setSetting } from "@/lib/db/repos/settings";
+import type { CustomScoreFactor, DetectionMethod } from "@/lib/scoring/custom-factors";
+import type { CustomAuditSignal, SignalDetectionMethod, SignalSeverity } from "@/lib/audit/custom-signals";
+
+// ---- Helpers ----
+
+function parseDetectionConfig(raw: string | undefined): Record<string, unknown> | null {
+  if (!raw || raw.trim() === "" || raw.trim() === "{}") return null;
+  try {
+    const parsed = JSON.parse(raw.trim());
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---- Branding ----
+
+const brandingSchema = z.object({
+  name: z.string().trim().max(200).optional(),
+  logoUrl: z.string().trim().max(2000).optional(),
+  accentColor: z.string().trim().max(80).optional(),
+  pitch: z.string().trim().max(500).optional(),
+});
+
+export async function updateBrandingAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, brandingSchema);
+  await repoBranding(owner.id, input, db);
+  revalidatePath("/settings");
+}
+
+// ---- Custom scoring factors ----
+
+const customFactorBaseSchema = z.object({
+  code: z.string().trim().min(1).max(80).regex(/^[a-z0-9_]+$/, "Must be snake_case"),
+  label: z.string().trim().min(1).max(200),
+  points: z
+    .string()
+    .trim()
+    .regex(/^-?\d+$/)
+    .transform(Number),
+  enabled: z.string().optional().transform((v) => v === "1"),
+  detectionMethod: z.enum(["presence", "regex", "count", "manual"]),
+  detectionConfig: z.string().trim().optional(),
+});
+
+export async function createCustomFactorAction(
+  formData: FormData
+): Promise<CustomScoreFactor> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, customFactorBaseSchema);
+
+  const factor = await createFactor(db, owner.id, {
+    code: input.code,
+    label: input.label,
+    points: input.points,
+    enabled: input.enabled,
+    detectionMethod: input.detectionMethod as DetectionMethod,
+    detectionConfig: parseDetectionConfig(input.detectionConfig) as CustomScoreFactor["detectionConfig"],
+  });
+  revalidatePath("/settings");
+  return factor;
+}
+
+export async function updateCustomFactorAction(
+  formData: FormData
+): Promise<CustomScoreFactor> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const factorId = String(formData.get("factorId") ?? "").trim();
+  if (!factorId) throw new Error("factorId is required.");
+  const input = parseFormOrThrow(formData, customFactorBaseSchema);
+
+  const updated = await updateFactor(db, owner.id, factorId, {
+    code: input.code,
+    label: input.label,
+    points: input.points,
+    enabled: input.enabled,
+    detectionMethod: input.detectionMethod as DetectionMethod,
+    detectionConfig: parseDetectionConfig(input.detectionConfig) as CustomScoreFactor["detectionConfig"],
+  });
+  if (!updated) throw new Error("Factor not found.");
+  revalidatePath("/settings");
+  return updated;
+}
+
+export async function deleteCustomFactorAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const factorId = String(formData.get("factorId") ?? "").trim();
+  if (!factorId) throw new Error("factorId is required.");
+  await deleteFactor(db, owner.id, factorId);
+  revalidatePath("/settings");
+}
+
+// ---- Custom audit signals ----
+
+const customSignalBaseSchema = z.object({
+  code: z.string().trim().min(1).max(80).regex(/^[a-z0-9_]+$/, "Must be snake_case"),
+  label: z.string().trim().min(1).max(200),
+  severity: z.enum(["info", "low", "medium", "high"]),
+  enabled: z.string().optional().transform((v) => v === "1"),
+  detectionMethod: z.enum(["regex", "presence", "absence", "count"]),
+  detectionConfig: z.string().trim().optional(),
+});
+
+export async function createCustomSignalAction(
+  formData: FormData
+): Promise<CustomAuditSignal> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, customSignalBaseSchema);
+
+  const signal = await createSignal(db, owner.id, {
+    code: input.code,
+    label: input.label,
+    severity: input.severity as SignalSeverity,
+    enabled: input.enabled,
+    detectionMethod: input.detectionMethod as SignalDetectionMethod,
+    detectionConfig: parseDetectionConfig(input.detectionConfig) as CustomAuditSignal["detectionConfig"],
+  });
+  revalidatePath("/settings");
+  return signal;
+}
+
+export async function updateCustomSignalAction(
+  formData: FormData
+): Promise<CustomAuditSignal> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const signalId = String(formData.get("signalId") ?? "").trim();
+  if (!signalId) throw new Error("signalId is required.");
+  const input = parseFormOrThrow(formData, customSignalBaseSchema);
+
+  const updated = await updateSignal(db, owner.id, signalId, {
+    code: input.code,
+    label: input.label,
+    severity: input.severity as SignalSeverity,
+    enabled: input.enabled,
+    detectionMethod: input.detectionMethod as SignalDetectionMethod,
+    detectionConfig: parseDetectionConfig(input.detectionConfig) as CustomAuditSignal["detectionConfig"],
+  });
+  if (!updated) throw new Error("Signal not found.");
+  revalidatePath("/settings");
+  return updated;
+}
+
+export async function deleteCustomSignalAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const signalId = String(formData.get("signalId") ?? "").trim();
+  if (!signalId) throw new Error("signalId is required.");
+  await deleteSignal(db, owner.id, signalId);
+  revalidatePath("/settings");
+}
+
+// ---- Templates ----
+
+const TEMPLATES_KEY = "templates/v1";
+
+export type DraftTemplateData = {
+  key: string;
+  label: string;
+  subject?: string;
+  body: string;
+};
+
+const saveTemplateSchema = z.object({
+  key: z.string().trim().min(1).max(80),
+  label: z.string().trim().min(1).max(100),
+  subject: z.string().trim().max(300).optional(),
+  body: z.string().trim().min(1).max(10000),
+});
+
+export async function saveTemplateAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, saveTemplateSchema);
+
+  const existing = (await getSetting<DraftTemplateData[]>(db, owner.id, TEMPLATES_KEY)) ?? [];
+  const idx = existing.findIndex((t) => t.key === input.key);
+  const updated: DraftTemplateData = {
+    key: input.key,
+    label: input.label,
+    subject: input.subject,
+    body: input.body,
+  };
+  if (idx >= 0) {
+    existing[idx] = updated;
+  } else {
+    existing.push(updated);
+  }
+  await setSetting(db, owner.id, TEMPLATES_KEY, existing);
+  revalidatePath("/settings");
+}
+
+/** Preview a template body against a seeded sample lead. Read-only, returns substituted string. */
+export async function previewTemplateAction(formData: FormData): Promise<string> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const body = String(formData.get("body") ?? "").trim();
+  if (!body) return "";
+
+  const profile = await getProfileSettings(db, owner.id);
+  const customVars = await getCustomVariables(db, owner.id);
+
+  // Seeded sample lead for preview
+  const sampleLead = {
+    businessName: "Sample Business",
+    city: "Mumbai",
+    region: "Maharashtra",
+    country: "India",
+    niche: "D2C Brands",
+    category: "Consumer goods",
+    websiteUrl: "https://example.com",
+    publicEmail: "hello@example.com",
+  };
+
+  const ctx = buildContext({
+    lead: sampleLead as Parameters<typeof buildContext>[0]["lead"],
+    studioName: profile.studioName ?? owner.fullName ?? "Your Studio",
+    pitch: profile.pitch,
+    caseStudyUrl: profile.caseStudyUrl,
+    workspaceName: profile.studioName ?? owner.fullName ?? "Your Studio",
+    customVars,
+  });
+
+  const { output } = substitute(body, ctx);
+  return output;
+}
+
+// ---- Custom variables ----
+
+const customVarSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^[a-zA-Z0-9_]+$/, "Variable name must be alphanumeric/underscore"),
+  value: z.string().trim().max(500),
+});
+
+export async function setCustomVariableAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, customVarSchema);
+  await setCustomVariable(db, owner.id, input.name, input.value);
+  revalidatePath("/settings");
+}
+
+export async function deleteCustomVariableAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) throw new Error("Variable name is required.");
+  await deleteCustomVariable(db, owner.id, name);
+  revalidatePath("/settings");
+}

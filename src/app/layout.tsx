@@ -17,10 +17,10 @@ const caprasimo = Caprasimo({
 
 export const metadata: Metadata = {
   title: {
-    default: "DWN Lead Engine",
-    template: "%s — DWN Lead Engine",
+    default: "Lead Engine",
+    template: "%s — Lead Engine",
   },
-  description: "Internal lead-generation CRM for Design with Nihar.",
+  description: "Lead generation and outreach CRM.",
   robots: { index: false, follow: false },
 };
 

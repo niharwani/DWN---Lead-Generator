@@ -224,3 +224,75 @@ export async function findUniqueSlug(db: Db, base: string): Promise<string> {
   // Final fallback with random suffix
   return `${base}-${crypto.randomUUID().slice(0, 8)}`;
 }
+
+/* -----------------------------------------------------------------
+ * Phase C — Profile/branding helpers
+ * -----------------------------------------------------------------
+ * `name`, `logoUrl`, `accentColor` live on the workspaces table (Phase A).
+ * Studio pitch, bio, signature, case-study URL stay in app_settings under
+ * key `profile/v1` because they're user-content metadata, not workspace
+ * identity. Settings sections import these helpers directly.
+ */
+
+import { getSetting, setSetting } from "./settings";
+
+export const PROFILE_KEY = "profile/v1";
+
+export type ProfileSettings = {
+  studioName?: string;
+  publicWebsite?: string;
+  defaultCity?: string;
+  defaultCurrency?: string;
+  pitch?: string;
+  logoUrl?: string;
+  accentColor?: string;
+  caseStudyUrl?: string;
+  signature?: string;
+};
+
+export async function getProfileSettings(
+  db: Db,
+  ownerId: string
+): Promise<ProfileSettings> {
+  const stored = await getSetting<ProfileSettings>(db, ownerId, PROFILE_KEY);
+  return stored ?? {};
+}
+
+export async function setProfileSettings(
+  db: Db,
+  ownerId: string,
+  settings: ProfileSettings
+): Promise<void> {
+  await setSetting(db, ownerId, PROFILE_KEY, settings);
+}
+
+export type BrandingInput = {
+  name?: string;
+  logoUrl?: string;
+  accentColor?: string;
+  pitch?: string;
+};
+
+/**
+ * Update workspace branding. Routes:
+ *   - name, logoUrl, accentColor → workspaces table
+ *   - pitch → profile/v1 app_settings
+ * Merges with existing values for both stores.
+ */
+export async function updateBranding(
+  workspaceId: string,
+  branding: BrandingInput,
+  db: Db
+): Promise<void> {
+  const workspacePatch: Partial<Pick<NewWorkspace, "name" | "logoUrl" | "accentColor">> = {};
+  if (branding.name !== undefined) workspacePatch.name = branding.name;
+  if (branding.logoUrl !== undefined) workspacePatch.logoUrl = branding.logoUrl;
+  if (branding.accentColor !== undefined) workspacePatch.accentColor = branding.accentColor;
+  if (Object.keys(workspacePatch).length > 0) {
+    await updateWorkspace(db, workspaceId, workspacePatch);
+  }
+  if (branding.pitch !== undefined) {
+    const existing = await getProfileSettings(db, workspaceId);
+    await setProfileSettings(db, workspaceId, { ...existing, pitch: branding.pitch });
+  }
+}

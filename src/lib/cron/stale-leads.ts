@@ -159,7 +159,7 @@ function escapeHtml(input: string): string {
  */
 export function buildDigestHtml(result: StaleLeadsResult): string {
   const parts: string[] = [];
-  parts.push("<h1>DWN Lead Engine — Daily Digest</h1>");
+  parts.push("<h1>Lead Engine — Daily Digest</h1>");
 
   parts.push(`<h2>Overdue tasks (${result.overdueTasks.length})</h2>`);
   if (result.overdueTasks.length === 0) {

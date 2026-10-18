@@ -16,10 +16,10 @@ export function Sidebar() {
         </div>
         <div className="flex flex-col leading-tight">
           <span className="text-sm font-semibold tracking-tight">
-            DWN Lead Engine
+            Lead Engine
           </span>
           <span className="text-[11px] text-[var(--color-text-subtle)]">
-            Design with Nihar
+            Your workspace
           </span>
         </div>
       </div>
