@@ -2188,3 +2188,288 @@ export async function syncBillingStateAction(): Promise<void> {
   revalidatePath("/settings");
   revalidatePath("/billing");
 }
+
+/* -----------------------------------------------------------------
+ * Phase F — Teams + RBAC
+ * -----------------------------------------------------------------
+ * All appended below. No existing function is modified above.
+ * requireRole / requirePermission are NOT called on any existing
+ * action in this pass — the integration pass does that.
+ * -----------------------------------------------------------------
+ */
+
+import {
+  createInvite,
+  deleteInvite,
+} from "@/lib/db/repos/invites";
+import {
+  addMember,
+  removeMember,
+  listMembers,
+} from "@/lib/db/repos/workspaces";
+import { requirePermission, requireRole } from "@/lib/auth/rbac";
+import { recordAuditLog } from "@/lib/audit-log/writer";
+import { sendEmail } from "@/lib/email/resend";
+import { leads as leadsTable, tasks as tasksTable } from "@/lib/db/schema";
+
+/* -----------------------------------------------------------------
+ * inviteMemberAction
+ * ----------------------------------------------------------------- */
+
+const inviteMemberSchema = z.object({
+  email: z.string().trim().email().max(320),
+  role: z.enum(["admin", "member", "viewer"]),
+});
+
+export async function inviteMemberAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  requirePermission(owner, "manage_members");
+
+  const input = parseFormOrThrow(formData, inviteMemberSchema);
+  const db = await getDb();
+
+  assertWithinRateLimit(owner.id, "invite_send");
+
+  const normalizedEmail = input.email.trim().toLowerCase();
+
+  // Anti-enumeration: silently succeed if already a member
+  const { profiles: profilesTable } = await import("@/lib/db/schema");
+  const { eq: eqOp } = await import("drizzle-orm");
+  const [existingProfile] = await db
+    .select({ id: profilesTable.id })
+    .from(profilesTable)
+    .where(eqOp(profilesTable.email, normalizedEmail))
+    .limit(1);
+
+  if (existingProfile) {
+    const existing = await listMembers(db, owner.id);
+    if (existing.some((m) => m.profileId === existingProfile.id)) {
+      revalidatePath("/settings");
+      return; // anti-enumeration: silent no-op
+    }
+  }
+
+  const { invite, token } = await createInvite(db, {
+    workspaceId: owner.id,
+    email: normalizedEmail,
+    role: input.role,
+    invitedBy: owner.profileId,
+  });
+
+  const env = await getRuntimeEnv();
+  const appBaseUrl = env.APP_BASE_URL ?? "http://localhost:3000";
+  const inviteUrl = `${appBaseUrl}/invite/${token}`;
+
+  await sendEmail({
+    to: normalizedEmail,
+    subject: `You've been invited to ${owner.workspace.name} on Lead Engine`,
+    html: `<p><strong>${owner.fullName ?? owner.email}</strong> invited you to join <strong>${owner.workspace.name}</strong> as a <strong>${input.role}</strong>.</p><p><a href="${inviteUrl}">Accept invitation</a></p><p>Expires in 7 days.</p>`,
+    text: `You've been invited to join ${owner.workspace.name} as ${input.role}.\n\nAccept: ${inviteUrl}\n\nExpires in 7 days.`,
+  });
+
+  await recordAuditLog(
+    owner.id,
+    owner.profileId,
+    "invited",
+    "invite",
+    invite.id,
+    { email: normalizedEmail, role: input.role }
+  );
+
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * revokeInviteAction
+ * ----------------------------------------------------------------- */
+
+export async function revokeInviteAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  requirePermission(owner, "manage_members");
+
+  const inviteId = String(formData.get("inviteId") ?? "").trim();
+  if (!inviteId) throw new Error("inviteId required.");
+
+  const db = await getDb();
+  await deleteInvite(db, inviteId);
+
+  await recordAuditLog(
+    owner.id,
+    owner.profileId,
+    "deleted",
+    "invite",
+    inviteId
+  );
+
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * removeMemberAction
+ * ----------------------------------------------------------------- */
+
+export async function removeMemberAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  requirePermission(owner, "manage_members");
+
+  const profileId = String(formData.get("profileId") ?? "").trim();
+  if (!profileId) throw new Error("profileId required.");
+
+  const db = await getDb();
+
+  // Prevent removing the sole owner
+  const allMembers = await listMembers(db, owner.id);
+  const targetMember = allMembers.find((m) => m.profileId === profileId);
+  if (!targetMember) throw new Error("Member not found.");
+  if (targetMember.role === "owner") {
+    const ownerCount = allMembers.filter((m) => m.role === "owner").length;
+    if (ownerCount <= 1) {
+      throw new Error("Cannot remove the sole owner. Transfer ownership first.");
+    }
+  }
+
+  // Admins cannot remove other admins or owners
+  if (owner.role === "admin" && (targetMember.role === "admin" || targetMember.role === "owner")) {
+    throw new Error("Admins cannot remove other admins or owners.");
+  }
+
+  await removeMember(db, owner.id, profileId);
+
+  await recordAuditLog(
+    owner.id,
+    owner.profileId,
+    "member_removed",
+    "member",
+    profileId,
+    { removedRole: targetMember.role }
+  );
+
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * changeMemberRoleAction
+ * ----------------------------------------------------------------- */
+
+export async function changeMemberRoleAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  requirePermission(owner, "manage_members");
+
+  const profileId = String(formData.get("profileId") ?? "").trim();
+  const newRole = String(formData.get("role") ?? "").trim() as "owner" | "admin" | "member" | "viewer";
+  if (!profileId) throw new Error("profileId required.");
+  if (!["owner", "admin", "member", "viewer"].includes(newRole)) {
+    throw new Error("Invalid role.");
+  }
+
+  const db = await getDb();
+  const allMembers = await listMembers(db, owner.id);
+  const targetMember = allMembers.find((m) => m.profileId === profileId);
+  if (!targetMember) throw new Error("Member not found.");
+
+  // Cannot demote sole owner
+  if (targetMember.role === "owner" && newRole !== "owner") {
+    const ownerCount = allMembers.filter((m) => m.role === "owner").length;
+    if (ownerCount <= 1) {
+      throw new Error("Cannot demote the sole owner. Transfer ownership first.");
+    }
+  }
+
+  const previousRole = targetMember.role;
+  await addMember(db, owner.id, profileId, newRole);
+
+  await recordAuditLog(
+    owner.id,
+    owner.profileId,
+    "role_changed",
+    "member",
+    profileId,
+    { from: previousRole, to: newRole }
+  );
+
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * transferOwnershipAction
+ * ----------------------------------------------------------------- */
+
+export async function transferOwnershipAction(newOwnerProfileId: string): Promise<void> {
+  const owner = await requirePageOwner();
+  requireRole(owner, "owner");
+
+  if (!newOwnerProfileId) throw new Error("newOwnerProfileId required.");
+  if (newOwnerProfileId === owner.profileId) throw new Error("You are already the owner.");
+
+  const db = await getDb();
+  const allMembers = await listMembers(db, owner.id);
+  const target = allMembers.find((m) => m.profileId === newOwnerProfileId);
+  if (!target) throw new Error("Target profile is not a member of this workspace.");
+
+  // Promote new owner then demote current owner to admin
+  await addMember(db, owner.id, newOwnerProfileId, "owner");
+  await addMember(db, owner.id, owner.profileId, "admin");
+
+  await recordAuditLog(
+    owner.id,
+    owner.profileId,
+    "role_changed",
+    "member",
+    newOwnerProfileId,
+    { action: "ownership_transfer", previousRole: target.role, newRole: "owner" }
+  );
+
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * assignLeadAction
+ * ----------------------------------------------------------------- */
+
+export async function assignLeadAction(
+  leadId: string,
+  assigneeProfileId: string | null
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  if (!leadId) throw new Error("leadId required.");
+
+  const now = new Date().toISOString();
+  await db
+    .update(leadsTable)
+    .set({ updatedAt: now })
+    .where(and(eq(leadsTable.ownerId, owner.id), eq(leadsTable.id, leadId)));
+
+  // assignedTo is a Phase A migration column — update via raw SQL to avoid
+  // the inferred schema missing it in this compilation context
+  const { sql: sqlExpr } = await import("drizzle-orm");
+  await db.run(sqlExpr`UPDATE leads SET assigned_to = ${assigneeProfileId}, updated_at = ${now} WHERE owner_id = ${owner.id} AND id = ${leadId}`);
+
+  revalidateAll(leadId);
+}
+
+/* -----------------------------------------------------------------
+ * assignTaskAction
+ * ----------------------------------------------------------------- */
+
+export async function assignTaskAction(
+  taskId: string,
+  assigneeProfileId: string | null
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  if (!taskId) throw new Error("taskId required.");
+
+  const now = new Date().toISOString();
+  await db
+    .update(tasksTable)
+    .set({ updatedAt: now })
+    .where(and(eq(tasksTable.ownerId, owner.id), eq(tasksTable.id, taskId)));
+
+  const { sql: sqlExpr } = await import("drizzle-orm");
+  await db.run(sqlExpr`UPDATE tasks SET assigned_to = ${assigneeProfileId}, updated_at = ${now} WHERE owner_id = ${owner.id} AND id = ${taskId}`);
+
+  revalidateAll();
+}

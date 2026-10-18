@@ -8,29 +8,73 @@ import { ActionButton } from "@/components/forms/action-button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { completeTaskAction, createTaskAction } from "@/lib/actions";
-import { pageGroupedTasks, pageListLeads } from "@/lib/data";
+import { pageGroupedTasks, pageListLeads, requirePageOwner } from "@/lib/data";
 import {
   TASK_PRIORITY_LABEL,
   TASK_STATUS_LABEL,
   formatRelative,
 } from "@/lib/demo/format";
 import type { Lead, Task } from "@/lib/demo/types";
+import { getDb } from "@/lib/db/client";
+import { listMembers } from "@/lib/db/repos/workspaces";
+import { profiles } from "@/lib/db/schema";
+import { inArray } from "drizzle-orm";
 
 export const metadata: Metadata = { title: "Tasks" };
 
-export default async function TasksPage() {
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const assigneeFilter = typeof sp.assignee === "string" ? sp.assignee : undefined;
+
   const [groups, leads] = await Promise.all([
     pageGroupedTasks(),
     pageListLeads({}, "updated"),
   ]);
   const leadById = new Map<string, Lead>();
   for (const l of leads) leadById.set(l.id, l);
+
+  // Phase F: workspace members for assignee filter
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const rawMembers = await listMembers(db, owner.id);
+  const memberProfileIds = rawMembers.map((m) => m.profileId);
+  const memberProfiles =
+    memberProfileIds.length > 0
+      ? await db.select().from(profiles).where(inArray(profiles.id, memberProfileIds))
+      : [];
+  const memberProfileMap = new Map(memberProfiles.map((p) => [p.id, p]));
+  const workspaceMembers = rawMembers.map((m) => ({
+    profileId: m.profileId,
+    label:
+      memberProfileMap.get(m.profileId)?.fullName ??
+      memberProfileMap.get(m.profileId)?.email ??
+      m.profileId,
+  }));
+
+  // Apply assignee filter if provided
+  function filterByAssignee<T extends { assignedTo?: string | null }>(items: T[]): T[] {
+    if (!assigneeFilter) return items;
+    return items.filter((t) => t.assignedTo === assigneeFilter);
+  }
+
+  const filteredGroups = {
+    overdue: filterByAssignee(groups.overdue as Array<Task & { assignedTo?: string | null }>),
+    today: filterByAssignee(groups.today as Array<Task & { assignedTo?: string | null }>),
+    thisWeek: filterByAssignee(groups.thisWeek as Array<Task & { assignedTo?: string | null }>),
+    upcoming: filterByAssignee(groups.upcoming as Array<Task & { assignedTo?: string | null }>),
+    completed: filterByAssignee(groups.completed as Array<Task & { assignedTo?: string | null }>),
+  };
+
   const total =
-    groups.overdue.length +
-    groups.today.length +
-    groups.thisWeek.length +
-    groups.upcoming.length;
-  const done = groups.completed.length;
+    filteredGroups.overdue.length +
+    filteredGroups.today.length +
+    filteredGroups.thisWeek.length +
+    filteredGroups.upcoming.length;
+  const done = filteredGroups.completed.length;
 
   return (
     <>
@@ -39,6 +83,28 @@ export default async function TasksPage() {
         description="Follow-ups, reviews, verifications, and manual sends. Grouped by when they're due."
         actions={null}
       />
+
+      {/* Assignee filter — Phase F */}
+      {workspaceMembers.length > 1 && (
+        <div className="mb-4 flex items-center gap-3">
+          <span className="text-xs text-[var(--color-text-muted)]">Filter by assignee:</span>
+          <a
+            href="/tasks"
+            className={`rounded-sm px-2 py-1 text-xs ${!assigneeFilter ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"}`}
+          >
+            All
+          </a>
+          {workspaceMembers.map((m) => (
+            <a
+              key={m.profileId}
+              href={`/tasks?assignee=${encodeURIComponent(m.profileId)}`}
+              className={`rounded-sm px-2 py-1 text-xs ${assigneeFilter === m.profileId ? "bg-[var(--color-accent-100)] text-[var(--color-accent-700)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"}`}
+            >
+              {m.label}
+            </a>
+          ))}
+        </div>
+      )}
 
       <Card className="mb-5 max-w-3xl">
         <CardBody>
@@ -93,17 +159,17 @@ export default async function TasksPage() {
       <div className="mb-5 grid gap-3 md:grid-cols-5">
         <HeaderStat
           label="Overdue"
-          value={groups.overdue.length}
+          value={filteredGroups.overdue.length}
           icon={<AlertTriangle aria-hidden className="h-3.5 w-3.5 text-[color:#8c6a00]" />}
           tone="warning"
         />
         <HeaderStat
           label="Today"
-          value={groups.today.length}
+          value={filteredGroups.today.length}
           icon={<Calendar aria-hidden className="h-3.5 w-3.5 text-[var(--color-accent-600)]" />}
         />
-        <HeaderStat label="This week" value={groups.thisWeek.length} />
-        <HeaderStat label="Upcoming" value={groups.upcoming.length} />
+        <HeaderStat label="This week" value={filteredGroups.thisWeek.length} />
+        <HeaderStat label="Upcoming" value={filteredGroups.upcoming.length} />
         <HeaderStat
           label="Completed"
           value={done}
@@ -119,36 +185,36 @@ export default async function TasksPage() {
         />
       ) : (
         <div className="space-y-4">
-          {groups.overdue.length > 0 ? (
+          {filteredGroups.overdue.length > 0 ? (
             <TaskGroup
               label="Overdue"
               tone="warning"
-              items={groups.overdue}
+              items={filteredGroups.overdue}
               emptyMessage="Nothing is overdue — nice."
               leadById={leadById}
             />
           ) : null}
           <TaskGroup
             label="Today"
-            items={groups.today}
+            items={filteredGroups.today}
             emptyMessage="Nothing due today."
             leadById={leadById}
           />
           <TaskGroup
             label="This week"
-            items={groups.thisWeek}
+            items={filteredGroups.thisWeek}
             emptyMessage="This week is clear."
             leadById={leadById}
           />
           <TaskGroup
             label="Upcoming"
-            items={groups.upcoming}
+            items={filteredGroups.upcoming}
             emptyMessage="No scheduled work beyond this week."
             leadById={leadById}
           />
           <TaskGroup
             label="Completed"
-            items={groups.completed}
+            items={filteredGroups.completed}
             emptyMessage="No tasks closed yet."
             muted
             leadById={leadById}

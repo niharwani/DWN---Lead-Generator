@@ -35,6 +35,7 @@ import {
   runAuditAction,
   scoreLeadAction,
   toggleDoNotContactAction,
+  assignLeadAction,
 } from "@/lib/actions";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -45,7 +46,12 @@ import {
   pageListBriefs,
   pageListDrafts,
   pageListTasks,
+  requirePageOwner,
 } from "@/lib/data";
+import { getDb } from "@/lib/db/client";
+import { listMembers } from "@/lib/db/repos/workspaces";
+import { profiles } from "@/lib/db/schema";
+import { inArray } from "drizzle-orm";
 import {
   CONFIDENCE_LABEL,
   OUTREACH_CHANNEL_LABEL,
@@ -99,6 +105,24 @@ export default async function LeadDetailPage({
     ? await pageGetCampaign(brief.campaignId)
     : undefined;
 
+  // Phase F: workspace members for assignment dropdown
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const rawMembers = await listMembers(db, owner.id);
+  const memberProfileIds = rawMembers.map((m) => m.profileId);
+  const memberProfiles =
+    memberProfileIds.length > 0
+      ? await db.select().from(profiles).where(inArray(profiles.id, memberProfileIds))
+      : [];
+  const memberProfileMap = new Map(memberProfiles.map((p) => [p.id, p]));
+  const workspaceMembers = rawMembers.map((m) => ({
+    profileId: m.profileId,
+    label:
+      memberProfileMap.get(m.profileId)?.fullName ??
+      memberProfileMap.get(m.profileId)?.email ??
+      m.profileId,
+  }));
+
   return (
     <>
       <div className="mb-2">
@@ -151,6 +175,41 @@ export default async function LeadDetailPage({
                 Save
               </button>
             </form>
+            {/* Assigned to — Phase F */}
+            <form
+              action={async (fd: FormData) => {
+                "use server";
+                const assignee = fd.get("assigneeProfileId");
+                await assignLeadAction(
+                  lead.id,
+                  assignee && assignee !== "" ? String(assignee) : null
+                );
+              }}
+              className="inline-flex items-center gap-1.5"
+            >
+              <label className="text-[11px] text-[var(--color-text-subtle)]">
+                Assigned to
+              </label>
+              <select
+                name="assigneeProfileId"
+                defaultValue={(lead as { assignedTo?: string | null }).assignedTo ?? ""}
+                className="h-7 rounded-sm border border-[var(--color-border)] bg-[var(--color-bg)] px-2 text-xs"
+              >
+                <option value="">Unassigned</option>
+                {workspaceMembers.map((m) => (
+                  <option key={m.profileId} value={m.profileId}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                className="h-7 rounded-sm border border-[var(--color-border-strong)] bg-[var(--color-surface)] px-2 text-[11px] hover:bg-[var(--color-neutral-100)]"
+              >
+                Save
+              </button>
+            </form>
+
             {lead.doNotContact.flagged ? (
               <ActionButton
                 action={toggleDoNotContactAction}

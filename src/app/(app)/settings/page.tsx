@@ -22,17 +22,26 @@ import { requirePageOwner } from "@/lib/data";
 import { getDb } from "@/lib/db/client";
 import { listFactors } from "@/lib/db/repos/custom-factors";
 import { listSignals } from "@/lib/db/repos/custom-signals";
-import { getProfileSettings, getWorkspace } from "@/lib/db/repos/workspaces";
+import { getProfileSettings, getWorkspace, listMembers } from "@/lib/db/repos/workspaces";
 import { getSetting } from "@/lib/db/repos/settings";
 import { getCurrentPeriodUsage } from "@/lib/db/repos/usage";
 import { getRuntimeEnv } from "@/lib/env";
 import { PLANS, comparePlans, type PlanId } from "@/lib/billing/plans";
+import { listPendingInvites } from "@/lib/db/repos/invites";
+import { listAuditLog } from "@/lib/db/repos/audit-log";
+import { listWebhooks } from "@/lib/db/repos/webhooks";
+import { profiles } from "@/lib/db/schema";
+import { inArray } from "drizzle-orm";
 import { BrandingSection } from "./_sections/branding";
 import { CustomFactorsSection } from "./_sections/custom-factors";
 import { CustomSignalsSection } from "./_sections/custom-signals";
 import { TemplatesSection } from "./_sections/templates";
 import { BillingSection } from "./_sections/billing";
+import { MembersSection } from "./_sections/members";
+import { AuditLogSection } from "./_sections/audit-log";
+import { WebhooksSection } from "./_sections/webhooks";
 import type { DraftTemplateData } from "@/lib/actions";
+import type { MemberRow, PendingInvite } from "./_sections/members";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -56,7 +65,7 @@ export default async function SettingsPage() {
     getRuntimeEnv(),
   ]);
 
-  // Next upgradeable plan's price ID (monthly as default)
+  // Phase E — Next upgradeable plan's price ID (monthly as default)
   const currentPlan = owner.workspace.plan as PlanId;
   const planOrder: PlanId[] = ["free", "freelancer", "teams", "studio"];
   const nextUpgradePlanId = planOrder.find((p) => comparePlans(p, currentPlan) > 0) ?? null;
@@ -66,6 +75,50 @@ export default async function SettingsPage() {
   };
   const nextPriceId = nextUpgradePlanId ? (nextPriceIdMap[nextUpgradePlanId] ?? null) : null;
   const nextPlanName = nextUpgradePlanId ? PLANS[nextUpgradePlanId].name : null;
+
+  // Phase F data — members, invites, audit log, webhooks
+  const [rawMembers, pendingInvites, auditEntries, webhooks] = await Promise.all([
+    listMembers(db, owner.id),
+    listPendingInvites(db, owner.id),
+    listAuditLog(db, owner.id, { limit: 51 }),
+    listWebhooks(db, owner.id),
+  ]);
+
+  // Hydrate member rows with profile email/name
+  const profileIds = rawMembers.map((m) => m.profileId);
+  const profileRows =
+    profileIds.length > 0
+      ? await db.select().from(profiles).where(inArray(profiles.id, profileIds))
+      : [];
+  const profileMap = new Map(profileRows.map((p) => [p.id, p]));
+
+  const memberRows: MemberRow[] = rawMembers.map((m) => {
+    const p = profileMap.get(m.profileId);
+    return {
+      profileId: m.profileId,
+      email: p?.email ?? m.profileId,
+      fullName: p?.fullName ?? null,
+      role: m.role as MemberRow["role"],
+      acceptedAt: m.acceptedAt,
+    };
+  });
+
+  const pendingInviteRows: PendingInvite[] = pendingInvites.map((inv) => ({
+    id: inv.id,
+    email: inv.email,
+    role: inv.role as PendingInvite["role"],
+    expiresAt: inv.expiresAt,
+  }));
+
+  const auditHasMore = auditEntries.length > 50;
+  const auditPage = auditEntries.slice(0, 50);
+
+  // Members for audit log actor filter
+  const auditMembers = memberRows.map((m) => ({
+    profileId: m.profileId,
+    email: m.email,
+    fullName: m.fullName,
+  }));
 
   return (
     <>
@@ -81,6 +134,13 @@ export default async function SettingsPage() {
           initialLogoUrl={profile.logoUrl ?? ""}
           initialAccentColor={profile.accentColor ?? ""}
           initialPitch={profile.pitch ?? ""}
+        />
+
+        {/* --- Members (Phase F) --------------------------------------- */}
+        <MembersSection
+          members={memberRows}
+          pendingInvites={pendingInviteRows}
+          currentProfileId={owner.profileId}
         />
 
         {/* --- Business profile ---------------------------------------- */}
@@ -326,6 +386,16 @@ export default async function SettingsPage() {
           paymentFailed={billingState?.paymentFailed ?? false}
           nextPriceId={nextPriceId}
           nextPlanName={nextPlanName}
+        />
+
+        {/* --- Webhooks (Phase F) --------------------------------------- */}
+        <WebhooksSection initialWebhooks={webhooks} />
+
+        {/* --- Audit log (Phase F) -------------------------------------- */}
+        <AuditLogSection
+          initialEntries={auditPage}
+          hasMore={auditHasMore}
+          members={auditMembers}
         />
 
         <p className="pt-2 text-[11px] text-[var(--color-text-subtle)]">

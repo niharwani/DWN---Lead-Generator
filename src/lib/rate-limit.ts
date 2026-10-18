@@ -23,6 +23,8 @@ export const BUCKETS = {
   webhook_delivery: { limit: 100, windowMs: 60_000 }, // 100 deliveries / minute / workspace
   // Phase E: billing checkout sessions (prevent accidental loops)
   billing_checkout: { limit: 10, windowMs: 60_000 }, // 10 checkout requests / minute / workspace
+  // Phase F: member invites
+  invite_send: { limit: 20, windowMs: 3_600_000 }, // 20 invites / hour / workspace
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;
