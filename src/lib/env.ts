@@ -27,6 +27,14 @@ const EXPOSED_KEYS = [
   "MAIL_FROM",
   "SESSION_COOKIE_SECRET",
   "APP_BASE_URL",
+  // Phase E additions — Stripe billing
+  "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "STRIPE_PRICE_ID_FREELANCER_MONTHLY",
+  "STRIPE_PRICE_ID_FREELANCER_ANNUAL",
+  "STRIPE_PRICE_ID_TEAMS_MONTHLY",
+  "STRIPE_PRICE_ID_TEAMS_ANNUAL",
+  "BILLING_RETURN_URL",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

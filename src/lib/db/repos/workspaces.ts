@@ -296,3 +296,71 @@ export async function updateBranding(
     await setProfileSettings(db, workspaceId, { ...existing, pitch: branding.pitch });
   }
 }
+
+/* --------------------------------------------------------------------------
+ * Phase E — Stripe field helpers (APPEND ONLY — do not modify above)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Update Stripe-related fields on a workspace row.
+ * Called by the webhook handler and syncBillingStateAction.
+ */
+export async function updateStripeFields(
+  db: Db,
+  workspaceId: string,
+  fields: {
+    customerId?: string;
+    subscriptionId?: string;
+    trialEndsAt?: string | null;
+    plan?: "free" | "freelancer" | "teams" | "studio";
+  }
+): Promise<Workspace | undefined> {
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { updatedAt: now };
+
+  if (fields.customerId !== undefined) patch.stripeCustomerId = fields.customerId;
+  if (fields.subscriptionId !== undefined) patch.stripeSubscriptionId = fields.subscriptionId;
+  if (fields.trialEndsAt !== undefined) patch.trialEndsAt = fields.trialEndsAt;
+  if (fields.plan !== undefined) patch.plan = fields.plan;
+
+  await db
+    .update(workspaces)
+    .set(patch as Partial<typeof workspaces.$inferInsert>)
+    .where(eq(workspaces.id, workspaceId));
+
+  return getWorkspace(db, workspaceId);
+}
+
+/**
+ * Look up a workspace by its Stripe customer ID.
+ * Used by the webhook handler to map Stripe events to workspaces.
+ */
+export async function getByStripeCustomerId(
+  db: Db,
+  customerId: string
+): Promise<Workspace | undefined> {
+  const [row] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.stripeCustomerId, customerId))
+    .limit(1);
+  return row;
+}
+
+/**
+ * List workspace members with their emails.
+ * Used by billing confirmations to find who should receive upgrade emails.
+ */
+export async function listMembersForDigest(
+  db: Db,
+  workspaceId: string
+): Promise<Array<{ profileId: string; role: string }>> {
+  const rows = await db
+    .select({
+      profileId: workspaceMembers.profileId,
+      role: workspaceMembers.role,
+    })
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.workspaceId, workspaceId));
+  return rows;
+}

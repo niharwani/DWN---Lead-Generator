@@ -2056,3 +2056,135 @@ export async function enableAutoDecayAction(days: number): Promise<void> {
   await upsertAppSetting(db, owner.id, "auto_decay/v1", { enabled: true, days });
   revalidatePath("/settings");
 }
+
+/* -----------------------------------------------------------------
+ * Phase E — Billing actions (APPEND ONLY — do not modify above)
+ * -----------------------------------------------------------------
+ * These actions wrap the billing API routes and are used by the
+ * billing section UI. The actual limit enforcement (checkLimit /
+ * requireFeature calls inside existing mutations) is intentionally
+ * deferred to a follow-up integration pass.
+ */
+
+/**
+ * Redirect the user to a Stripe Checkout session for the given priceId.
+ * Typically called from the BillingSection or billing page.
+ */
+export async function startCheckoutAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const priceId = formData.get("priceId");
+  if (!priceId || typeof priceId !== "string") {
+    throw new Error("priceId is required");
+  }
+
+  const env = await getRuntimeEnv();
+  const baseUrl = env.APP_BASE_URL ?? "http://localhost:3000";
+
+  const { createCheckoutSession } = await import("@/lib/billing/stripe");
+  const { assertWithinRateLimit, RateLimitError } = await import("@/lib/rate-limit");
+
+  try {
+    assertWithinRateLimit(owner.id, "billing_checkout");
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      throw new Error("Too many checkout requests. Please wait a moment and try again.");
+    }
+    throw err;
+  }
+
+  const session = await createCheckoutSession({
+    workspaceId: owner.id,
+    priceId,
+    successUrl: `${baseUrl}/billing?checkout=success`,
+    cancelUrl: `${baseUrl}/billing?checkout=cancelled`,
+  });
+
+  if (!session.url) {
+    throw new Error("Stripe did not return a checkout URL.");
+  }
+
+  redirect(session.url);
+}
+
+/**
+ * Redirect the user to the Stripe Customer Portal for their workspace.
+ * The workspace must already have a Stripe customer ID.
+ */
+export async function openBillingPortalAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const { getWorkspace } = await import("@/lib/db/repos/workspaces");
+  const workspace = await getWorkspace(db, owner.id);
+  const customerId = workspace?.stripeCustomerId;
+
+  if (!customerId) {
+    throw new Error(
+      "No Stripe customer found for this workspace. Complete a checkout first."
+    );
+  }
+
+  const env = await getRuntimeEnv();
+  const baseUrl = env.BILLING_RETURN_URL ?? env.APP_BASE_URL ?? "http://localhost:3000";
+
+  const { createPortalSession } = await import("@/lib/billing/stripe");
+  const session = await createPortalSession({
+    customerId,
+    returnUrl: `${baseUrl}/settings#billing`,
+  });
+
+  redirect(session.url);
+}
+
+/**
+ * Admin-only: re-fetch the workspace's Stripe subscription and sync the
+ * plan + Stripe fields to the database. Useful for debugging webhook misses.
+ */
+export async function syncBillingStateAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const { getWorkspace, updateStripeFields } = await import("@/lib/db/repos/workspaces");
+  const workspace = await getWorkspace(db, owner.id);
+
+  if (!workspace?.stripeSubscriptionId) {
+    throw new Error("No Stripe subscription ID on this workspace.");
+  }
+
+  const { getSubscription } = await import("@/lib/billing/stripe");
+  const { getRuntimeEnv: getEnv } = await import("@/lib/env");
+  const env = await getEnv();
+
+  const sub = await getSubscription(workspace.stripeSubscriptionId);
+
+  // Derive plan from the subscription's price ID
+  const priceId = sub.items?.data?.[0]?.price?.id;
+  let plan: "free" | "freelancer" | "teams" | "studio" = "free";
+  if (priceId) {
+    if (
+      priceId === env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ||
+      priceId === env.STRIPE_PRICE_ID_FREELANCER_ANNUAL
+    ) {
+      plan = "freelancer";
+    } else if (
+      priceId === env.STRIPE_PRICE_ID_TEAMS_MONTHLY ||
+      priceId === env.STRIPE_PRICE_ID_TEAMS_ANNUAL
+    ) {
+      plan = "teams";
+    }
+  }
+
+  const trialEndsAt = sub.trial_end
+    ? new Date(sub.trial_end * 1000).toISOString()
+    : null;
+
+  await updateStripeFields(db, owner.id, {
+    plan,
+    trialEndsAt,
+    customerId: sub.customer,
+    subscriptionId: sub.id,
+  });
+
+  revalidatePath("/settings");
+  revalidatePath("/billing");
+}

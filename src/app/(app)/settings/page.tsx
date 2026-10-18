@@ -22,12 +22,16 @@ import { requirePageOwner } from "@/lib/data";
 import { getDb } from "@/lib/db/client";
 import { listFactors } from "@/lib/db/repos/custom-factors";
 import { listSignals } from "@/lib/db/repos/custom-signals";
-import { getProfileSettings } from "@/lib/db/repos/workspaces";
+import { getProfileSettings, getWorkspace } from "@/lib/db/repos/workspaces";
 import { getSetting } from "@/lib/db/repos/settings";
+import { getCurrentPeriodUsage } from "@/lib/db/repos/usage";
+import { getRuntimeEnv } from "@/lib/env";
+import { PLANS, comparePlans, type PlanId } from "@/lib/billing/plans";
 import { BrandingSection } from "./_sections/branding";
 import { CustomFactorsSection } from "./_sections/custom-factors";
 import { CustomSignalsSection } from "./_sections/custom-signals";
 import { TemplatesSection } from "./_sections/templates";
+import { BillingSection } from "./_sections/billing";
 import type { DraftTemplateData } from "@/lib/actions";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -41,12 +45,27 @@ export default async function SettingsPage() {
   // Phase C data
   const owner = await requirePageOwner();
   const db = await getDb();
-  const [customFactors, customSignals, profile, templatesRaw] = await Promise.all([
+  const [customFactors, customSignals, profile, templatesRaw, workspace, usage, billingState, env] = await Promise.all([
     listFactors(db, owner.id),
     listSignals(db, owner.id),
     getProfileSettings(db, owner.id),
     getSetting<DraftTemplateData[]>(db, owner.id, "templates/v1"),
+    getWorkspace(db, owner.id),
+    getCurrentPeriodUsage(db, owner.id),
+    getSetting<{ paymentFailed?: boolean }>(db, owner.id, "billing_state/v1"),
+    getRuntimeEnv(),
   ]);
+
+  // Next upgradeable plan's price ID (monthly as default)
+  const currentPlan = owner.workspace.plan as PlanId;
+  const planOrder: PlanId[] = ["free", "freelancer", "teams", "studio"];
+  const nextUpgradePlanId = planOrder.find((p) => comparePlans(p, currentPlan) > 0) ?? null;
+  const nextPriceIdMap: Partial<Record<PlanId, string>> = {
+    freelancer: env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ?? undefined,
+    teams: env.STRIPE_PRICE_ID_TEAMS_MONTHLY ?? undefined,
+  };
+  const nextPriceId = nextUpgradePlanId ? (nextPriceIdMap[nextUpgradePlanId] ?? null) : null;
+  const nextPlanName = nextUpgradePlanId ? PLANS[nextUpgradePlanId].name : null;
 
   return (
     <>
@@ -297,6 +316,17 @@ export default async function SettingsPage() {
             disabled.
           </p>
         </SettingsSection>
+
+        {/* --- Billing (Phase E) --------------------------------------- */}
+        <BillingSection
+          currentPlan={currentPlan}
+          hasStripeCustomer={!!workspace?.stripeCustomerId}
+          usage={usage}
+          trialEndsAt={workspace?.trialEndsAt ?? null}
+          paymentFailed={billingState?.paymentFailed ?? false}
+          nextPriceId={nextPriceId}
+          nextPlanName={nextPlanName}
+        />
 
         <p className="pt-2 text-[11px] text-[var(--color-text-subtle)]">
           Users are responsible for complying with applicable laws, provider

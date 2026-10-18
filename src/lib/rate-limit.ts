@@ -21,6 +21,8 @@ export const BUCKETS = {
   reply_triage: { limit: 60, windowMs: 60_000 }, // 60 triage calls / minute / workspace
   enrichment: { limit: 30, windowMs: 60_000 }, // 30 enrichment calls / minute / workspace
   webhook_delivery: { limit: 100, windowMs: 60_000 }, // 100 deliveries / minute / workspace
+  // Phase E: billing checkout sessions (prevent accidental loops)
+  billing_checkout: { limit: 10, windowMs: 60_000 }, // 10 checkout requests / minute / workspace
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;

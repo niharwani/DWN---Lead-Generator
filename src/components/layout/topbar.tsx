@@ -1,13 +1,37 @@
-import { Search, ChevronDown, LogOut, Settings, ChevronsUpDown } from "lucide-react";
+import { Search, LogOut, Settings, ChevronsUpDown } from "lucide-react";
 import { getOwner } from "@/lib/auth/session";
 import { getDb } from "@/lib/db/client";
 import { getWorkspacesForProfile } from "@/lib/db/repos/workspaces";
+import { getCurrentPeriodUsage } from "@/lib/db/repos/usage";
+import { getPlan, type MeteredResource } from "@/lib/billing/plans";
 
 export async function Topbar() {
   const owner = await getOwner();
+  const db = await getDb();
   const workspaces = owner
-    ? await getWorkspacesForProfile(await getDb(), owner.profileId)
+    ? await getWorkspacesForProfile(db, owner.profileId)
     : [];
+
+  // Phase E: usage indicator — show audits and AI drafts usage chips
+  const usage = owner ? await getCurrentPeriodUsage(db, owner.id) : null;
+  const plan = owner ? getPlan(owner.workspace.plan) : null;
+
+  // Build compact usage indicators for audits + ai_drafts
+  const usageChips: Array<{ label: string; used: number; cap: number | null; warn: boolean }> = [];
+  if (owner && plan && usage) {
+    const resourcesToShow: Array<{ resource: MeteredResource; label: string; field: keyof typeof usage }> = [
+      { resource: "audits", label: "Audits", field: "auditsUsed" },
+      { resource: "ai_drafts", label: "AI", field: "aiDraftsUsed" },
+    ];
+    for (const { resource, label, field } of resourcesToShow) {
+      const cap = plan.limits[resource] ?? null;
+      const used = usage[field] as number;
+      if (cap !== null) {
+        const pct = (used / cap) * 100;
+        usageChips.push({ label, used, cap, warn: pct >= 80 });
+      }
+    }
+  }
 
   const initials = owner?.fullName
     ? owner.fullName
@@ -35,6 +59,30 @@ export async function Topbar() {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        {/* Phase E: Usage indicator chips */}
+        {usageChips.length > 0 && (
+          <a
+            href="/settings#billing"
+            title="View usage in Settings"
+            className="hidden items-center gap-1.5 sm:flex"
+            aria-label="Usage indicators"
+          >
+            {usageChips.map((chip) => (
+              <span
+                key={chip.label}
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  chip.warn
+                    ? "bg-yellow-100 text-yellow-800"
+                    : "bg-[var(--color-neutral-100)] text-[var(--color-text-muted)]"
+                }`}
+              >
+                {chip.label} {chip.used}/{chip.cap}
+                {chip.warn && " ⚠"}
+              </span>
+            ))}
+          </a>
+        )}
+
         {/* Workspace switcher */}
         {owner && workspaces.length > 0 && (
           <details className="relative">
