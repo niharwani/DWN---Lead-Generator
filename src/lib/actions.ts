@@ -19,6 +19,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z, type ZodTypeAny } from "zod";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { requirePageOwner } from "@/lib/data";
 import { runAudit } from "@/lib/audit/engine";
@@ -70,6 +71,24 @@ import type {
   TaskPriority,
   TaskType,
 } from "@/lib/demo/types";
+// Phase D imports
+import { appSettings, outreachDrafts } from "@/lib/db/schema";
+import { saveNotificationPrefs } from "@/lib/db/repos/notification-prefs";
+import {
+  createCadence,
+  updateCadence,
+  deleteCadence,
+  attachCadenceToCampaign,
+  detachCadenceFromCampaign,
+} from "@/lib/db/repos/cadences";
+import {
+  createWebhook,
+  deleteWebhook,
+  enqueueDelivery,
+} from "@/lib/db/repos/webhooks";
+import { snoozeLeadKey, snoozeTaskKey } from "@/lib/cron/snooze-wake";
+import type { CadenceStep } from "@/lib/outreach/cadence";
+import type { NotificationPrefs } from "@/lib/db/repos/notification-prefs";
 
 /* -----------------------------------------------------------------
  * Helpers
@@ -1759,5 +1778,281 @@ export async function deleteCustomVariableAction(formData: FormData): Promise<vo
   const name = String(formData.get("name") ?? "").trim();
   if (!name) throw new Error("Variable name is required.");
   await deleteCustomVariable(db, owner.id, name);
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Snooze / wake
+ * ----------------------------------------------------------------- */
+
+async function upsertAppSetting(
+  db: Awaited<ReturnType<typeof getDb>>,
+  ownerId: string,
+  key: string,
+  value: unknown
+): Promise<void> {
+  const now = new Date().toISOString();
+  const existing = await db
+    .select({ id: appSettings.id })
+    .from(appSettings)
+    .where(and(eq(appSettings.ownerId, ownerId), eq(appSettings.key, key)))
+    .limit(1);
+  if (existing.length > 0) {
+    await db
+      .update(appSettings)
+      .set({ value, updatedAt: now })
+      .where(and(eq(appSettings.ownerId, ownerId), eq(appSettings.key, key)));
+  } else {
+    await db.insert(appSettings).values({
+      id: crypto.randomUUID(),
+      ownerId,
+      key,
+      value,
+      updatedAt: now,
+    });
+  }
+}
+
+export async function snoozeLeadAction(leadId: string, until: string): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  await upsertAppSetting(db, owner.id, snoozeLeadKey(leadId), until);
+  await createActivity(db, owner.id, {
+    leadId,
+    activityType: "lead_updated",
+    title: "Lead snoozed",
+    description: `Snoozed until ${until}`,
+  });
+  revalidateAll(leadId);
+}
+
+export async function unsnoozeLeadAction(leadId: string): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  await upsertAppSetting(db, owner.id, snoozeLeadKey(leadId), null);
+  await createActivity(db, owner.id, {
+    leadId,
+    activityType: "lead_updated",
+    title: "Lead un-snoozed",
+  });
+  revalidateAll(leadId);
+}
+
+export async function snoozeTaskAction(taskId: string, until: string): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  await upsertAppSetting(db, owner.id, snoozeTaskKey(taskId), until);
+  revalidateAll();
+}
+
+export async function unsnoozeTaskAction(taskId: string): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  await upsertAppSetting(db, owner.id, snoozeTaskKey(taskId), null);
+  revalidateAll();
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Cadences
+ * ----------------------------------------------------------------- */
+
+const cadenceStepSchema = z.object({
+  stepNumber: z.coerce.number().int().min(1),
+  offsetDays: z.coerce.number().int().min(1),
+  template: z.string().min(1).max(400),
+  channel: z.enum(["email", "contact_form", "instagram_dm", "linkedin_manual", "other"]),
+});
+
+const cadenceSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  steps: z.array(cadenceStepSchema).min(1).max(10),
+});
+
+export async function createCadenceAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const raw = extractForm(formData);
+  const name = raw.name ?? "";
+  const stepsRaw = raw.steps;
+  let steps: CadenceStep[] = [];
+  if (stepsRaw) {
+    try {
+      steps = JSON.parse(stepsRaw) as CadenceStep[];
+    } catch {
+      throw new Error("Invalid steps JSON.");
+    }
+  }
+  const input = cadenceSchema.safeParse({ name, steps });
+  if (!input.success) throw new Error(input.error.issues[0]?.message ?? "Invalid cadence.");
+  await createCadence(db, owner.id, { name: input.data.name, steps: input.data.steps });
+  revalidatePath("/campaigns");
+}
+
+export async function updateCadenceAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const id = String(formData.get("cadenceId") ?? "").trim();
+  if (!id) throw new Error("cadenceId required.");
+  const raw = extractForm(formData);
+  const name = raw.name;
+  const stepsRaw = raw.steps;
+  let steps: CadenceStep[] | undefined;
+  if (stepsRaw) {
+    try {
+      steps = JSON.parse(stepsRaw) as CadenceStep[];
+    } catch {
+      throw new Error("Invalid steps JSON.");
+    }
+  }
+  await updateCadence(db, owner.id, id, { ...(name ? { name } : {}), ...(steps ? { steps } : {}) });
+  revalidatePath("/campaigns");
+}
+
+export async function deleteCadenceAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const id = String(formData.get("cadenceId") ?? "").trim();
+  if (!id) throw new Error("cadenceId required.");
+  await deleteCadence(db, owner.id, id);
+  revalidatePath("/campaigns");
+}
+
+export async function attachCadenceToCampaignAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const campaignId = String(formData.get("campaignId") ?? "").trim();
+  const cadenceId = String(formData.get("cadenceId") ?? "").trim();
+  if (!campaignId || !cadenceId) throw new Error("campaignId and cadenceId required.");
+  await attachCadenceToCampaign(db, owner.id, campaignId, cadenceId);
+  revalidateAll(undefined, campaignId);
+}
+
+export async function detachCadenceFromCampaignAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const campaignId = String(formData.get("campaignId") ?? "").trim();
+  if (!campaignId) throw new Error("campaignId required.");
+  await detachCadenceFromCampaign(db, owner.id, campaignId);
+  revalidateAll(undefined, campaignId);
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Webhooks
+ * ----------------------------------------------------------------- */
+
+export async function createWebhookAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const url = String(formData.get("url") ?? "").trim();
+  const events = String(formData.get("events") ?? "").split(",").map((e) => e.trim()).filter(Boolean);
+  if (!url) throw new Error("url required.");
+  const secret = crypto.randomUUID(); // auto-generated
+  await createWebhook(db, owner.id, { url, secret, events, enabled: true });
+  revalidatePath("/settings");
+}
+
+export async function deleteWebhookAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const id = String(formData.get("webhookId") ?? "").trim();
+  if (!id) throw new Error("webhookId required.");
+  await deleteWebhook(db, owner.id, id);
+  revalidatePath("/settings");
+}
+
+export async function testWebhookAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const id = String(formData.get("webhookId") ?? "").trim();
+  if (!id) throw new Error("webhookId required.");
+  await enqueueDelivery(db, owner.id, {
+    webhookId: id,
+    ownerId: owner.id,
+    event: "webhook_probe",
+    payload: { event: "webhook_probe", timestamp: new Date().toISOString() },
+  });
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Notification preferences
+ * ----------------------------------------------------------------- */
+
+export async function updateNotificationPrefsAction(
+  formData: FormData
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const patch: Partial<NotificationPrefs> = {};
+  const emailEnabled = formData.get("emailEnabled");
+  if (emailEnabled != null) patch.emailEnabled = emailEnabled === "1";
+  const emailAddress = formData.get("emailAddress");
+  if (emailAddress != null) patch.emailAddress = String(emailAddress).trim() || undefined;
+  const slackEnabled = formData.get("slackEnabled");
+  if (slackEnabled != null) patch.slackEnabled = slackEnabled === "1";
+  const slackWebhookUrl = formData.get("slackWebhookUrl");
+  if (slackWebhookUrl != null) patch.slackWebhookUrl = String(slackWebhookUrl).trim() || undefined;
+  const discordEnabled = formData.get("discordEnabled");
+  if (discordEnabled != null) patch.discordEnabled = discordEnabled === "1";
+  const discordWebhookUrl = formData.get("discordWebhookUrl");
+  if (discordWebhookUrl != null) patch.discordWebhookUrl = String(discordWebhookUrl).trim() || undefined;
+  const digestFrequency = formData.get("digestFrequency");
+  if (digestFrequency === "weekly" || digestFrequency === "never") {
+    patch.digestFrequency = digestFrequency;
+  }
+
+  await saveNotificationPrefs(db, owner.id, patch);
+  revalidatePath("/settings");
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Manual reply sentiment override
+ * ----------------------------------------------------------------- */
+
+export async function overrideReplySentimentAction(
+  formData: FormData
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const draftId = String(formData.get("draftId") ?? "").trim();
+  const rawSentiment = String(formData.get("sentiment") ?? "").trim();
+  if (!draftId) throw new Error("draftId required.");
+  const sentimentValues = [
+    "interested",
+    "needs_info",
+    "not_a_fit",
+    "unsubscribe",
+    "unclear",
+  ] as const;
+  if (!(sentimentValues as readonly string[]).includes(rawSentiment)) {
+    throw new Error("Invalid sentiment value.");
+  }
+  const sentiment = rawSentiment as (typeof sentimentValues)[number];
+  const now = new Date().toISOString();
+  await db
+    .update(outreachDrafts)
+    .set({ replySentiment: sentiment, updatedAt: now })
+    .where(and(eq(outreachDrafts.ownerId, owner.id), eq(outreachDrafts.id, draftId)));
+  const existing = await getDraft(db, owner.id, draftId);
+  if (existing) {
+    await createActivity(db, owner.id, {
+      leadId: existing.leadId,
+      activityType: "reply_logged",
+      title: `Reply sentiment overridden → ${sentiment.replace("_", " ")}`,
+      metadata: { manual: true, draftId },
+    });
+  }
+  revalidateAll(existing?.leadId);
+}
+
+/* -----------------------------------------------------------------
+ * Phase D — Auto-decay setting
+ * ----------------------------------------------------------------- */
+
+export async function enableAutoDecayAction(days: number): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  await upsertAppSetting(db, owner.id, "auto_decay/v1", { enabled: true, days });
   revalidatePath("/settings");
 }

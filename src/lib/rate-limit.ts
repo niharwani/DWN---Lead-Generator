@@ -18,6 +18,9 @@ export const BUCKETS = {
   discovery: { limit: 5, windowMs: 60_000 }, // 5 discovery runs / minute
   ai_draft: { limit: 15, windowMs: 60_000 }, // 15 AI drafts / minute
   magic_link: { limit: 5, windowMs: 60_000 }, // 5 magic-link requests / minute / IP
+  reply_triage: { limit: 60, windowMs: 60_000 }, // 60 triage calls / minute / workspace
+  enrichment: { limit: 30, windowMs: 60_000 }, // 30 enrichment calls / minute / workspace
+  webhook_delivery: { limit: 100, windowMs: 60_000 }, // 100 deliveries / minute / workspace
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;

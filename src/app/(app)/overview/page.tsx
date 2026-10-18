@@ -16,7 +16,10 @@ import {
   Search,
   Upload,
   Megaphone,
+  Inbox,
+  Clock,
 } from "lucide-react";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { PageHeader } from "@/components/layout/page-header";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardBody } from "@/components/ui/card";
@@ -30,6 +33,7 @@ import {
   pageOverviewMetrics,
   pagePipelineFunnel,
   pageSourceBreakdown,
+  requirePageOwner,
 } from "@/lib/data";
 import {
   STAGE_LABEL,
@@ -39,13 +43,19 @@ import {
   stageDotClass,
 } from "@/lib/demo/format";
 import type { Lead } from "@/lib/demo/types";
+import { getDb } from "@/lib/db/client";
+import { outreachDrafts, leads, tasks } from "@/lib/db/schema";
 
 export const metadata: Metadata = { title: "Overview" };
 
 export default async function OverviewPage() {
   // Fan-out once per page render — all queries hit the same D1 binding, so
   // Promise.all keeps the TTFB low even on a cold Worker.
-  const [metrics, funnel, activities, sources, bestCampaigns, taskGroups, leads] =
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const nowIso = new Date().toISOString();
+
+  const [metrics, funnel, activities, sources, bestCampaigns, taskGroups, allLeads] =
     await Promise.all([
       pageOverviewMetrics(),
       pagePipelineFunnel(),
@@ -56,8 +66,42 @@ export default async function OverviewPage() {
       pageListLeads({}, "updated"),
     ]);
 
+  // Phase D: replies awaiting triage (status=contacted, no replySentiment, has evidence with gmail thread)
+  const awaitingTriageRows = await db
+    .select()
+    .from(outreachDrafts)
+    .where(
+      and(
+        eq(outreachDrafts.ownerId, owner.id),
+        eq(outreachDrafts.status, "contacted"),
+        isNull(outreachDrafts.replySentiment)
+      )
+    )
+    .limit(10)
+    .catch(() => []);
+
+  // Phase D: follow-ups due today — open follow_up tasks due today or overdue
+  const todayEnd = new Date(new Date(nowIso).setHours(23, 59, 59, 999)).toISOString();
+  const followUpsDueTodayRows = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.ownerId, owner.id),
+        eq(tasks.status, "open"),
+        eq(tasks.taskType, "follow_up"),
+        isNotNull(tasks.dueAt)
+      )
+    )
+    .limit(10)
+    .catch(() => []);
+
+  const followUpsDueToday = followUpsDueTodayRows.filter(
+    (t) => t.dueAt != null && t.dueAt <= todayEnd
+  );
+
   const leadById = new Map<string, Lead>();
-  for (const l of leads) leadById.set(l.id, l);
+  for (const l of allLeads) leadById.set(l.id, l);
 
   const funnelMax = Math.max(1, ...funnel.map((f) => f.count));
   const sourceMax = Math.max(1, ...sources.map((s) => s.count));
@@ -85,7 +129,98 @@ export default async function OverviewPage() {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+      {/* Phase D — Automation sections */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Inbox aria-hidden className="h-4 w-4 text-[var(--color-accent-600)]" />
+              <CardTitle>Replies awaiting triage</CardTitle>
+              {awaitingTriageRows.length > 0 && (
+                <Badge variant="warning">{awaitingTriageRows.length}</Badge>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+              Contacted leads where a reply has been received but not yet classified.
+            </p>
+          </CardHeader>
+          <CardBody>
+            {awaitingTriageRows.length === 0 ? (
+              <p className="text-xs text-[var(--color-text-subtle)]">
+                No replies awaiting triage — great work staying on top of inbound.
+              </p>
+            ) : (
+              <ul className="divide-y divide-[var(--color-border)]">
+                {awaitingTriageRows.map((draft) => {
+                  const lead = leadById.get(draft.leadId);
+                  return (
+                    <li key={draft.id} className="py-2 first:pt-0 last:pb-0">
+                      <Link
+                        href={lead ? `/leads/${lead.id}` : "/outreach"}
+                        className="flex items-center justify-between gap-3 text-sm hover:underline"
+                      >
+                        <span className="truncate text-[var(--color-text)]">
+                          {lead?.businessName ?? draft.leadId}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-[var(--color-text-subtle)]">
+                          {formatRelative(draft.contactedAt ?? draft.updatedAt)}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Clock aria-hidden className="h-4 w-4 text-[var(--color-accent-600)]" />
+              <CardTitle>Follow-ups due today</CardTitle>
+              {followUpsDueToday.length > 0 && (
+                <Badge variant={followUpsDueToday.length > 0 ? "warning" : "muted"}>
+                  {followUpsDueToday.length}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+              Contacted leads eligible for the next cadence step today.
+            </p>
+          </CardHeader>
+          <CardBody>
+            {followUpsDueToday.length === 0 ? (
+              <p className="text-xs text-[var(--color-text-subtle)]">
+                No follow-ups due today. Check back tomorrow.
+              </p>
+            ) : (
+              <ul className="divide-y divide-[var(--color-border)]">
+                {followUpsDueToday.map((task) => {
+                  const lead = task.leadId ? leadById.get(task.leadId) : undefined;
+                  return (
+                    <li key={task.id} className="py-2 first:pt-0 last:pb-0">
+                      <Link
+                        href={lead ? `/leads/${lead.id}` : "/tasks"}
+                        className="flex items-center justify-between gap-3 text-sm hover:underline"
+                      >
+                        <span className="truncate text-[var(--color-text)]">
+                          {lead?.businessName ?? task.title}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-[var(--color-text-subtle)]">
+                          {formatRelative(task.dueAt ?? undefined)}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+      </div>
+
+      <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Total leads" value={metrics.totalLeads} icon={Users} />
         <StatTile
           label="New this week"

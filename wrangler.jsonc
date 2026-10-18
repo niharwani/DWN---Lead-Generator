@@ -43,7 +43,21 @@
       // Daily 09:00 UTC — stale-lead digest (overdue tasks, dormant qualified, stuck contacted)
       "0 9 * * *",
       // 1st of month 02:00 UTC — re-audit weak/outdated/acceptable sites, detect regressions
-      "0 2 1 * *"
+      "0 2 1 * *",
+      // Phase D — every 15min: reply triage sweep (AI classifier)
+      "*/15 * * * *",
+      // Phase D — every 2h: follow-up cadence runner
+      "0 */2 * * *",
+      // Phase D — every 6h: bounce/DSN detection
+      "0 */6 * * *",
+      // Phase D — Monday 10:00 UTC: weekly digests
+      "0 10 * * MON",
+      // Phase D — daily 03:00 UTC: auto-enrichment pass
+      "0 3 * * *",
+      // Phase D — every 5min: webhook retry queue drain
+      "*/5 * * * *",
+      // Phase D — daily 02:15 UTC: snooze/wake sweep
+      "15 2 * * *"
     ]
   }
   // Future bindings (uncomment when the phase that uses them lands):
