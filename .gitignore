@@ -44,3 +44,10 @@ test-results/
 
 # Generated seed SQL (produced by scripts/generate-seed.ts)
 scripts/seed.sql
+
+# Claude Code agent worktrees + clones
+.claude/
+.clone/
+
+# D1 backups
+backups/

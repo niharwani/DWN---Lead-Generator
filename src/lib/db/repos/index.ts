@@ -17,3 +17,6 @@ export * from "./metrics";
 export * from "./service-offerings";
 export * from "./settings";
 export * from "./tasks";
+// Phase A additions
+export * from "./workspaces";
+export * from "./sessions";

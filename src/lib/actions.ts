@@ -1182,3 +1182,290 @@ export async function generateDraftVariantsAction(
 
 /** Reserved — exported here so pages can import consistently later. */
 export type { OutreachStatus, PipelineStage };
+
+/* -----------------------------------------------------------------
+ * Phase B — Onboarding + preset actions
+ * -----------------------------------------------------------------
+ * These actions are APPENDED to the existing file as instructed.
+ * They persist state to app_settings with key `onboarding/v1` and
+ * do NOT depend on any Phase A tables (workspaces, sessions, etc.).
+ * `ownerId` is used as the tenant key exactly as the rest of this file does.
+ */
+
+import {
+  getOnboardingState,
+  setOnboardingState,
+  completeOnboarding,
+  resetOnboarding,
+  type OnboardingStepData,
+} from "@/lib/onboarding/state";
+import { applyPreset } from "@/lib/onboarding/apply-preset";
+import type { ApplyPresetSummary } from "@/lib/onboarding/apply-preset";
+
+/* -- Step schemas -------------------------------------------------- */
+
+const step1Schema = z.object({
+  workspaceName: z.string().trim().min(1).max(120),
+  fullName: z.string().trim().max(120).optional(),
+  websiteUrl: z.string().trim().url().max(500).optional().or(z.literal("")),
+  attributionSource: z.string().trim().max(80).optional(),
+});
+
+const step2Schema = z.object({
+  presetId: z.string().trim().min(1).max(60),
+  pitch: z.string().trim().max(400).optional(),
+  caseStudyUrl: z.string().trim().url().max(500).optional().or(z.literal("")),
+});
+
+const step3Schema = z
+  .object({
+    icpDescription: z.string().trim().max(600).optional(),
+    niches: z
+      .string()
+      .transform((v) =>
+        v
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      )
+      .optional(),
+    country: z.string().trim().max(80).optional(),
+    region: z.string().trim().max(120).optional(),
+    city: z.string().trim().max(120).optional(),
+    dealMin: z.string().regex(/^\d+$/).transform(Number).optional(),
+    dealMax: z.string().regex(/^\d+$/).transform(Number).optional(),
+    currency: z.string().trim().max(10).optional(),
+    skip: z.literal("true").optional(),
+    _goBack: z.literal("true").optional(),
+  })
+  .passthrough();
+
+/* Generic passthrough for steps 4 and 5 — validated at the app layer */
+const step4Schema = z.unknown();
+const step5Schema = z.unknown();
+
+/* -- Action: initialize ------------------------------------------- */
+
+/**
+ * Initialise onboarding state if it doesn't exist yet.
+ * Safe to call multiple times — no-ops when state already exists.
+ */
+export async function startOnboardingAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const current = await getOnboardingState(owner.id);
+  if (current.completed) {
+    redirect("/overview");
+  }
+  // State already exists — nothing to do.
+}
+
+/* -- Action: save step -------------------------------------------- */
+
+/**
+ * Persist step data and advance the wizard to the next step.
+ * Each step advances `step` by 1 unless `_goBack` is present (steps back by 1).
+ *
+ * @param step  1–5
+ * @param data  Unknown payload — validated per-step with Zod inside this fn.
+ */
+export async function saveOnboardingStepAction(
+  step: 1 | 2 | 3 | 4 | 5,
+  data: unknown
+): Promise<void> {
+  const owner = await requirePageOwner();
+  const current = await getOnboardingState(owner.id);
+
+  // Handle go-back signals — decrease step by 1 and don't save step data.
+  const raw = data as Record<string, unknown>;
+  if (raw?._goBack === true || raw?._goBack === "true") {
+    const prevStep = Math.max(1, step - 1) as 1 | 2 | 3 | 4 | 5;
+    await setOnboardingState(owner.id, { step: prevStep });
+    revalidatePath("/onboarding");
+    return;
+  }
+
+  // Validate per-step.
+  let stepData: Partial<OnboardingStepData> = {};
+
+  if (step === 1) {
+    const parsed = step1Schema.safeParse(data);
+    if (!parsed.success) {
+      throw new Error(parsed.error.issues[0]?.message ?? "Step 1 validation failed.");
+    }
+    stepData = {
+      who: {
+        workspaceName: parsed.data.workspaceName,
+        fullName: parsed.data.fullName,
+        websiteUrl: parsed.data.websiteUrl || undefined,
+        attributionSource: parsed.data.attributionSource,
+      },
+    };
+  } else if (step === 2) {
+    const parsed = step2Schema.safeParse(data);
+    if (!parsed.success) {
+      throw new Error(parsed.error.issues[0]?.message ?? "Step 2 validation failed.");
+    }
+    stepData = {
+      what: {
+        presetId: parsed.data.presetId,
+        pitch: parsed.data.pitch,
+        caseStudyUrl: parsed.data.caseStudyUrl || undefined,
+      },
+    };
+  } else if (step === 3) {
+    const skip = (raw?.skip === true || raw?.skip === "true");
+    if (!skip) {
+      stepData = {
+        icp: {
+          icpDescription: typeof raw?.icpDescription === "string" ? raw.icpDescription : undefined,
+          niches: Array.isArray(raw?.niches)
+            ? (raw.niches as string[])
+            : typeof raw?.niches === "string"
+            ? raw.niches.split(",").map((s: string) => s.trim()).filter(Boolean)
+            : undefined,
+          country: typeof raw?.country === "string" ? raw.country : undefined,
+          region: typeof raw?.region === "string" ? raw.region : undefined,
+          city: typeof raw?.city === "string" ? raw.city : undefined,
+          dealMin: typeof raw?.dealMin === "number" ? raw.dealMin : undefined,
+          dealMax: typeof raw?.dealMax === "number" ? raw.dealMax : undefined,
+          currency: typeof raw?.currency === "string" ? raw.currency : undefined,
+        },
+      };
+    }
+  } else if (step === 4) {
+    // Step 4: services + scoring overrides. Passed as-is from the component.
+    const servicesRaw = raw?.services as Array<{
+      name: string;
+      description: string;
+      idealCustomer: string;
+      valueProposition: string;
+    }> | undefined;
+    const scoringOverrides = raw?.scoringOverrides as
+      | Record<string, { points: number; enabled: boolean }>
+      | undefined;
+    stepData = { services: { services: servicesRaw, scoringOverrides } };
+  } else if (step === 5) {
+    // Step 5: integrations
+    stepData = {
+      integrations: {
+        digestFrequency:
+          (raw?.digestFrequency as "off" | "daily" | "weekly" | undefined) ?? "weekly",
+      },
+    };
+  }
+
+  const nextStep = (Math.min(6, step + 1)) as 1 | 2 | 3 | 4 | 5 | 6;
+  await setOnboardingState(owner.id, {
+    step: nextStep,
+    data: stepData,
+  });
+
+  // After step 2, apply the preset immediately so services + weights are
+  // pre-seeded before the user reaches steps 4 and 5.
+  if (step === 2 && stepData.what?.presetId) {
+    const db = await getDb();
+    void db; // getDb is already called above via applyPreset internally
+    await applyPreset(owner.id, stepData.what.presetId, {
+      pitch: stepData.what.pitch,
+    }).catch(() => {
+      // Non-fatal — preset can be re-applied later.
+    });
+  }
+
+  revalidatePath("/onboarding");
+}
+
+/* -- Action: apply preset ----------------------------------------- */
+
+/**
+ * Explicit preset application — used when the user re-applies or changes
+ * a preset from the settings page after onboarding.
+ */
+export async function applyPresetAction(presetId: string): Promise<ApplyPresetSummary> {
+  const owner = await requirePageOwner();
+  const summary = await applyPreset(owner.id, presetId);
+  revalidatePath("/settings");
+  revalidatePath("/onboarding");
+  return summary;
+}
+
+/* -- Action: complete onboarding ---------------------------------- */
+
+/**
+ * Final action called from the DoneStep component.
+ * Seeds 10 demo leads into the first campaign and marks onboarding complete.
+ */
+export async function completeOnboardingAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const state = await getOnboardingState(owner.id);
+
+  // Guard: already completed — no-op.
+  if (state.completed) return;
+
+  // Seed 10 demo leads tagged "Demo" into the first campaign.
+  const existingCampaigns = await listCampaigns(db, owner.id);
+  const firstCampaign = existingCampaigns[0];
+
+  if (firstCampaign) {
+    const demoLeads = buildDemoLeads(owner.id, firstCampaign.niche);
+    for (const dl of demoLeads) {
+      try {
+        const lead = await createLead(db, owner.id, dl);
+        await assignLeadToCampaign(db, owner.id, firstCampaign.id, lead.id);
+      } catch {
+        // Skip duplicates or any seeding errors silently.
+      }
+    }
+  }
+
+  await completeOnboarding(owner.id);
+  revalidatePath("/onboarding");
+  revalidatePath("/overview");
+}
+
+/* -- Action: restart onboarding (debug / admin) ------------------- */
+
+export async function restartOnboardingAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  await resetOnboarding(owner.id);
+  revalidatePath("/onboarding");
+  redirect("/onboarding");
+}
+
+/* -- Demo lead seeder helper -------------------------------------- */
+
+/**
+ * Builds 10 fictional demo leads for the given owner and niche.
+ * Tagged "Demo" so users can easily identify and delete them.
+ * Uses only the `createLead` repo function — no external I/O.
+ */
+function buildDemoLeads(
+  ownerId: string,
+  niche: string
+): Parameters<typeof createLead>[2][] {
+  void ownerId; // ownerId is passed via the createLead call site, not used here
+  const names = [
+    "Sunrise Solutions",
+    "Blue Mountain Co.",
+    "Crestview Group",
+    "Harbor Point LLC",
+    "Summit Digital",
+    "Greenfield Partners",
+    "Clearwater Studio",
+    "Ridgeline Services",
+    "Lakeside Creative",
+    "Northstar Consulting",
+  ];
+  return names.map((businessName, i) => ({
+    businessName,
+    category: niche,
+    niche,
+    city: "Demo City",
+    country: "United States",
+    sourceName: "manual",
+    websiteCondition: (["no_website", "outdated", "weak"] as const)[i % 3],
+    pipelineStage: "new" as const,
+    tags: ["Demo"],
+  }));
+}

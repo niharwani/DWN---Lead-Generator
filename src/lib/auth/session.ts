@@ -1,28 +1,45 @@
 /**
- * Server-side auth entry point.
+ * Server-side auth entry point (Phase A rewrite).
  *
- * Resolves the current owner across both environments:
- *   - Production: Access JWT from `Cf-Access-Jwt-Assertion` → verified → email
- *   - Dev / local: `DEV_OWNER_EMAIL` env var acts as the identity (bypass is
- *     only honored when NODE_ENV !== 'production')
+ * Resolution order for `getOwner()`:
+ *   1. Session cookie `sl_sid` → sessions row → active_workspace_id (or first
+ *      workspace from workspace_members).
+ *   2. If no session cookie but `Cf-Access-Jwt-Assertion` is present (DWN prod
+ *      shim), verify the JWT → resolve profile → first workspace. Auto-mints a
+ *      session so subsequent requests use path (1).
+ *   3. Dev bypass: `DEV_OWNER_EMAIL` in non-production environments. Resolves
+ *      profile → first workspace. Does NOT auto-mint a session (stateless dev).
  *
- * `requireOwner()` is the primary surface — every API handler and every
- * server-rendered page that reads owner-scoped data should start with it.
- * It auto-creates a `profiles` row on first sight of an email so Phase 2
- * doesn't need a separate signup flow for the single-owner internal tool.
+ * The returned `Owner.id` equals the current workspace_id. Every repo call
+ * that takes `ownerId` receives this value — existing repos stay untouched.
  */
 
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
-import { profiles, type Profile } from "@/lib/db/schema";
+import { profiles, sessions } from "@/lib/db/schema";
 import { verifyAccessJwt } from "./access";
+import { readSessionCookie, setSessionCookie } from "./sessions";
+import { createSession, updateSessionLastUsed } from "@/lib/db/repos/sessions";
+import { getWorkspacesForProfile } from "@/lib/db/repos/workspaces";
 
 export type Owner = {
+  /** workspace_id — used as ownerId everywhere downstream */
   id: string;
+  /** The authenticated human's profile id */
+  profileId: string;
   email: string;
   fullName: string | null;
+  role: "owner" | "admin" | "member" | "viewer";
+  workspace: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: "free" | "freelancer" | "teams" | "studio";
+  };
   isDemo: boolean;
+  /** The session id if resolved via session cookie (for last-used updates). */
+  _sessionId?: string;
 };
 
 export class UnauthenticatedError extends Error {
@@ -32,16 +49,79 @@ export class UnauthenticatedError extends Error {
   }
 }
 
-function toOwner(p: Profile): Owner {
+/* --------------------------------------------------------------------------
+ * Internal: build Owner from a resolved profile + workspace list
+ * -------------------------------------------------------------------------- */
+
+async function ownerFromProfile(
+  profileId: string,
+  email: string,
+  fullName: string | null,
+  isDemo: boolean,
+  preferredWorkspaceId?: string | null,
+  sessionId?: string
+): Promise<Owner | null> {
+  const db = await getDb();
+
+  const workspacesForProfile = await getWorkspacesForProfile(db, profileId);
+  const firstWs = workspacesForProfile[0];
+  if (!firstWs) return null;
+
+  const ws = preferredWorkspaceId
+    ? (workspacesForProfile.find((w) => w.id === preferredWorkspaceId) ?? firstWs)
+    : firstWs;
+
   return {
-    id: p.id,
-    email: p.email,
-    fullName: p.fullName,
-    isDemo: p.isDemo,
+    id: ws.id,
+    profileId,
+    email,
+    fullName,
+    role: ws.role,
+    workspace: {
+      id: ws.id,
+      name: ws.name,
+      slug: ws.slug,
+      plan: ws.plan,
+    },
+    isDemo,
+    _sessionId: sessionId,
   };
 }
 
-/** Read identity from the current request. Returns `null` if unauthenticated. */
+async function resolveProfileToOwner(
+  email: string,
+  preferredWorkspaceId?: string | null,
+  sessionId?: string
+): Promise<Owner | null> {
+  const db = await getDb();
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const [profileRow] = await db
+    .select()
+    .from(profiles)
+    .where(eq(profiles.email, normalizedEmail))
+    .limit(1);
+
+  if (!profileRow) return null;
+
+  return ownerFromProfile(
+    profileRow.id,
+    profileRow.email,
+    profileRow.fullName,
+    profileRow.isDemo,
+    preferredWorkspaceId,
+    sessionId
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Public API
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Read identity from the current request (CF Access or dev bypass only).
+ * Used internally and by legacy callers. For workspace-aware auth use `getOwner()`.
+ */
 export async function getIdentity(): Promise<{ email: string; name?: string } | null> {
   const h = await headers();
   const jwt = h.get("cf-access-jwt-assertion");
@@ -59,21 +139,10 @@ export async function getIdentity(): Promise<{ email: string; name?: string } | 
           reason: (err as Error).message,
         });
       }
-    } else {
-      console.warn(
-        "Access JWT present but CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD are not configured; falling back to Access email header"
-      );
     }
-
-    // Fallback: Access always sets `Cf-Access-Authenticated-User-Email` at the
-    // edge after a successful login, and strips any client-provided value, so
-    // when we see this header alongside a JWT we can trust the request came
-    // through Access even if we couldn't verify the JWT ourselves.
     if (accessEmail) return { email: accessEmail };
   }
 
-  // Dev-only bypass. Production never honors this path even if DEV_OWNER_EMAIL
-  // is set, so a leaked env var cannot unlock production.
   if (process.env.NODE_ENV !== "production") {
     const devEmail = process.env.DEV_OWNER_EMAIL;
     if (devEmail) return { email: devEmail, name: "Dev Owner" };
@@ -83,41 +152,107 @@ export async function getIdentity(): Promise<{ email: string; name?: string } | 
 }
 
 /**
- * Resolve or auto-create the owner profile for the authenticated identity.
- * Pure read-through: later identities with the same email reuse the row.
+ * Resolve the current owner from the request.
+ * Returns `null` if unauthenticated or if the profile has no workspace.
  */
 export async function getOwner(): Promise<Owner | null> {
-  const identity = await getIdentity();
-  if (!identity) return null;
-
   const db = await getDb();
-  const normalizedEmail = identity.email.trim().toLowerCase();
+  const now = new Date().toISOString();
 
-  const existing = await db
-    .select()
-    .from(profiles)
-    .where(eq(profiles.email, normalizedEmail))
-    .limit(1);
-  if (existing[0]) return toOwner(existing[0]);
+  // --- Path 1: Session cookie ---
+  const sessionId = await readSessionCookie();
+  if (sessionId) {
+    const [sessionRow] = await db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
 
-  // First login — provision a profile. Demo flag only set by the seed script,
-  // never by auth, so real sign-ins can't elevate themselves into demo-space.
-  const id = crypto.randomUUID();
-  await db.insert(profiles).values({
-    id,
-    email: normalizedEmail,
-    fullName: identity.name ?? null,
-    isDemo: false,
-  });
-  const [row] = await db.select().from(profiles).where(eq(profiles.id, id)).limit(1);
-  if (!row) throw new Error("Failed to create profile for authenticated user");
-  return toOwner(row);
+    if (sessionRow && sessionRow.expiresAt > now) {
+      const [profileRow] = await db
+        .select()
+        .from(profiles)
+        .where(eq(profiles.id, sessionRow.profileId))
+        .limit(1);
+
+      if (profileRow) {
+        const owner = await ownerFromProfile(
+          profileRow.id,
+          profileRow.email,
+          profileRow.fullName,
+          profileRow.isDemo,
+          sessionRow.activeWorkspaceId,
+          sessionId
+        );
+        if (owner) {
+          // Fire-and-forget last-used update
+          updateSessionLastUsed(db, sessionId).catch(() => {});
+          return owner;
+        }
+      }
+    }
+  }
+
+  // --- Path 2: CF Access JWT shim (DWN prod backwards compat) ---
+  const h = await headers();
+  const jwt = h.get("cf-access-jwt-assertion");
+  const accessEmail = h.get("cf-access-authenticated-user-email");
+
+  let cfEmail: string | null = null;
+
+  if (jwt) {
+    const teamDomain = process.env.CF_ACCESS_TEAM_DOMAIN;
+    const audience = process.env.CF_ACCESS_AUD;
+    if (teamDomain && audience) {
+      try {
+        const identity = await verifyAccessJwt(jwt, teamDomain, audience);
+        cfEmail = identity.email;
+      } catch {
+        if (accessEmail) cfEmail = accessEmail;
+      }
+    } else if (accessEmail) {
+      cfEmail = accessEmail;
+    }
+  }
+
+  if (cfEmail) {
+    const owner = await resolveProfileToOwner(cfEmail);
+    if (owner) {
+      // Auto-mint a session for the CF Access user so future requests use path 1
+      try {
+        const reqHeaders = h;
+        const ipAddress =
+          reqHeaders.get("cf-connecting-ip") ??
+          reqHeaders.get("x-forwarded-for") ??
+          undefined;
+        const userAgent = reqHeaders.get("user-agent") ?? undefined;
+        const newSession = await createSession(db, {
+          profileId: owner.profileId,
+          activeWorkspaceId: owner.workspace.id,
+          ipAddress,
+          userAgent,
+        });
+        await setSessionCookie(newSession.id);
+      } catch {
+        // Non-fatal: CF Access path still works without a session
+      }
+      return owner;
+    }
+  }
+
+  // --- Path 3: Dev bypass ---
+  if (process.env.NODE_ENV !== "production") {
+    const devEmail = process.env.DEV_OWNER_EMAIL;
+    if (devEmail) {
+      return resolveProfileToOwner(devEmail);
+    }
+  }
+
+  return null;
 }
 
 /**
- * API-route variant. Throws a Response with 401 when unauthenticated. The
- * calling handler either lets the throw propagate (returned as the response)
- * or catches to log before rethrowing.
+ * API-route / server-action variant. Throws a 401 Response when unauthenticated.
  */
 export async function requireOwner(): Promise<Owner> {
   const owner = await getOwner();

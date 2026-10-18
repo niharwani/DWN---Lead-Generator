@@ -622,3 +622,336 @@ export type NewTask = typeof tasks.$inferInsert;
 export type ServiceOffering = typeof serviceOfferings.$inferSelect;
 export type NewServiceOffering = typeof serviceOfferings.$inferInsert;
 export type AppSetting = typeof appSettings.$inferSelect;
+
+/* --------------------------------------------------------------------------
+ * workspaces — one row per tenant (Phase A)
+ * -------------------------------------------------------------------------- */
+export const workspaces = sqliteTable(
+  "workspaces",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    plan: text("plan", { enum: ["free", "freelancer", "teams", "studio"] })
+      .notNull()
+      .default("free"),
+    stripeCustomerId: text("stripe_customer_id"),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    trialEndsAt: text("trial_ends_at"),
+    onboardingState: text("onboarding_state", { mode: "json" }).$type<{
+      step?: string;
+      completed?: boolean;
+      [key: string]: unknown;
+    } | null>(),
+    industryPreset: text("industry_preset"),
+    logoUrl: text("logo_url"),
+    accentColor: text("accent_color"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    slugIdx: uniqueIndex("workspaces_slug_idx").on(t.slug),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * workspace_members — membership + role
+ * -------------------------------------------------------------------------- */
+export const workspaceMembers = sqliteTable(
+  "workspace_members",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["owner", "admin", "member", "viewer"] })
+      .notNull()
+      .default("member"),
+    invitedBy: text("invited_by").references(() => profiles.id),
+    invitedAt: text("invited_at"),
+    acceptedAt: text("accepted_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.workspaceId, t.profileId] }),
+    profileIdx: index("workspace_members_profile_idx").on(t.profileId),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * workspace_invites — pending invitations
+ * -------------------------------------------------------------------------- */
+export const workspaceInvites = sqliteTable("workspace_invites", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  role: text("role", { enum: ["owner", "admin", "member", "viewer"] })
+    .notNull()
+    .default("member"),
+  invitedBy: text("invited_by")
+    .notNull()
+    .references(() => profiles.id),
+  token: text("token").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  acceptedAt: text("accepted_at"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * sessions — session-cookie auth (Phase A)
+ * -------------------------------------------------------------------------- */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    activeWorkspaceId: text("active_workspace_id").references(
+      () => workspaces.id,
+      { onDelete: "set null" }
+    ),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    lastUsedAt: text("last_used_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+  },
+  (t) => ({
+    profileIdx: index("sessions_profile_idx").on(t.profileId),
+    expiresIdx: index("sessions_expires_idx").on(t.expiresAt),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * magic_link_tokens — short-lived, single-use login tokens (Phase A)
+ * -------------------------------------------------------------------------- */
+export const magicLinkTokens = sqliteTable(
+  "magic_link_tokens",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    consumedAt: text("consumed_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    tokenHashIdx: uniqueIndex("magic_link_tokens_hash_idx").on(t.tokenHash),
+    emailIdx: index("magic_link_tokens_email_idx").on(t.email),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * workspace_usage — monthly metering (Phase A schema, Phase E enforcement)
+ * -------------------------------------------------------------------------- */
+export const workspaceUsage = sqliteTable("workspace_usage", {
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  periodYyyyMm: text("period_yyyymm").notNull(),
+  auditsUsed: integer("audits_used").notNull().default(0),
+  aiDraftsUsed: integer("ai_drafts_used").notNull().default(0),
+  replyTriagesUsed: integer("reply_triages_used").notNull().default(0),
+  enrichmentsUsed: integer("enrichments_used").notNull().default(0),
+  discoveryRunsUsed: integer("discovery_runs_used").notNull().default(0),
+  gmailSendsUsed: integer("gmail_sends_used").notNull().default(0),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.workspaceId, t.periodYyyyMm] }),
+}));
+
+/* --------------------------------------------------------------------------
+ * audit_log — immutable activity log (Teams tier, Phase F)
+ * -------------------------------------------------------------------------- */
+export const auditLog = sqliteTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    actorProfileId: text("actor_profile_id").references(() => profiles.id),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id"),
+    metadata: text("metadata", { mode: "json" }).$type<Record<string, unknown>>(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    workspaceCreatedIdx: index("audit_log_workspace_created_idx").on(
+      t.workspaceId,
+      t.createdAt
+    ),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * custom_score_factors — Teams-tier scoring extensions
+ * -------------------------------------------------------------------------- */
+export const customScoreFactors = sqliteTable("custom_score_factors", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  code: text("code").notNull(),
+  label: text("label").notNull(),
+  points: integer("points").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  detectionMethod: text("detection_method").notNull(),
+  detectionConfig: text("detection_config", { mode: "json" }).$type<Record<string, unknown>>(),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * custom_audit_signals — Teams-tier audit extensions
+ * -------------------------------------------------------------------------- */
+export const customAuditSignals = sqliteTable("custom_audit_signals", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  code: text("code").notNull(),
+  label: text("label").notNull(),
+  severity: text("severity").notNull().default("info"),
+  detectionMethod: text("detection_method").notNull(),
+  detectionConfig: text("detection_config", { mode: "json" }).$type<Record<string, unknown>>(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * follow_up_cadences — outreach sequence definitions
+ * -------------------------------------------------------------------------- */
+export const followUpCadences = sqliteTable("follow_up_cadences", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  campaignId: text("campaign_id").references(() => campaigns.id, {
+    onDelete: "cascade",
+  }),
+  name: text("name").notNull(),
+  steps: text("steps", { mode: "json" })
+    .$type<Array<{ offset_days: number; template: string; channel: string }>>()
+    .notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * webhooks — outbound webhook endpoints (Teams tier)
+ * -------------------------------------------------------------------------- */
+export const webhooks = sqliteTable("webhooks", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  secret: text("secret").notNull(),
+  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * webhook_deliveries — delivery attempt log
+ * -------------------------------------------------------------------------- */
+export const webhookDeliveries = sqliteTable("webhook_deliveries", {
+  id: text("id").primaryKey(),
+  webhookId: text("webhook_id")
+    .notNull()
+    .references(() => webhooks.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  payload: text("payload").notNull(),
+  status: text("status", { enum: ["pending", "succeeded", "failed"] }).notNull(),
+  httpStatus: integer("http_status"),
+  errorMessage: text("error_message"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextRetryAt: text("next_retry_at"),
+  deliveredAt: text("delivered_at"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/* --------------------------------------------------------------------------
+ * notification_preferences — per-member notification settings
+ * -------------------------------------------------------------------------- */
+export const notificationPreferences = sqliteTable(
+  "notification_preferences",
+  {
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    digestFrequency: text("digest_frequency", {
+      enum: ["off", "daily", "weekly"],
+    })
+      .notNull()
+      .default("weekly"),
+    hotLeadAlerts: integer("hot_lead_alerts", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    replyAlerts: integer("reply_alerts", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    slackWebhookUrl: text("slack_webhook_url"),
+    discordWebhookUrl: text("discord_webhook_url"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.workspaceId, t.profileId] }),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * New inferred types (Phase A)
+ * -------------------------------------------------------------------------- */
+export type Workspace = typeof workspaces.$inferSelect;
+export type NewWorkspace = typeof workspaces.$inferInsert;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
+export type NewWorkspaceMember = typeof workspaceMembers.$inferInsert;
+export type WorkspaceInvite = typeof workspaceInvites.$inferSelect;
+export type NewWorkspaceInvite = typeof workspaceInvites.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
+export type MagicLinkToken = typeof magicLinkTokens.$inferSelect;
+export type NewMagicLinkToken = typeof magicLinkTokens.$inferInsert;
+export type WorkspaceUsage = typeof workspaceUsage.$inferSelect;
+export type AuditLogEntry = typeof auditLog.$inferSelect;
+export type CustomScoreFactor = typeof customScoreFactors.$inferSelect;
+export type CustomAuditSignal = typeof customAuditSignals.$inferSelect;
+export type FollowUpCadence = typeof followUpCadences.$inferSelect;
+export type Webhook = typeof webhooks.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type NotificationPreference = typeof notificationPreferences.$inferSelect;

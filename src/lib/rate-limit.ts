@@ -17,6 +17,7 @@ export const BUCKETS = {
   audit: { limit: 20, windowMs: 60_000 }, // 20 audits / minute / owner
   discovery: { limit: 5, windowMs: 60_000 }, // 5 discovery runs / minute
   ai_draft: { limit: 15, windowMs: 60_000 }, // 15 AI drafts / minute
+  magic_link: { limit: 5, windowMs: 60_000 }, // 5 magic-link requests / minute / IP
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;

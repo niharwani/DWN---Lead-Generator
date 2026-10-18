@@ -21,6 +21,11 @@ const EXPOSED_KEYS = [
   "GMAIL_CLIENT_SECRET",
   "GMAIL_REDIRECT_URI",
   "CRON_SECRET",
+  // Phase A additions
+  "RESEND_API_KEY",
+  "MAIL_FROM",
+  "SESSION_COOKIE_SECRET",
+  "APP_BASE_URL",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {
