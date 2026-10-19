@@ -1,21 +1,20 @@
 /**
  * /billing — Standalone plan comparison page.
  *
- * Shows all plans in a grid with feature matrix. "Current plan" chip on the
- * active plan. "Choose" buttons POST to /api/billing/checkout.
- * Yearly/monthly toggle. Price slots show "TBD" when null (pre-launch).
+ * COMING SOON: Billing is not yet live. Shows a waitlist capture form instead
+ * of checkout buttons. The original plan comparison grid is preserved below
+ * with checkout buttons commented out for easy restoration.
  */
 
 import type { Metadata } from "next";
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { requirePageOwner } from "@/lib/data";
-import { PLANS, comparePlans, type PlanId, type Feature } from "@/lib/billing/plans";
-import { getRuntimeEnv } from "@/lib/env";
-import { BillingCheckoutButton } from "./_components/checkout-button";
+import { PLANS, type PlanId, type Feature } from "@/lib/billing/plans";
+import { WaitlistForm } from "@/components/waitlist/waitlist-form";
 
 export const metadata: Metadata = { title: "Billing — Plans" };
 
@@ -37,7 +36,6 @@ const FEATURE_LABELS: Record<Feature, string> = {
   white_label: "White-label",
 };
 
-// Ordered list of features to display in the grid
 const DISPLAYED_FEATURES: Feature[] = [
   "ai_drafts",
   "gmail_send",
@@ -61,34 +59,40 @@ const PLAN_ORDER: PlanId[] = ["free", "freelancer", "teams", "studio"];
 export default async function BillingPage() {
   const owner = await requirePageOwner();
   const currentPlan = owner.workspace.plan;
-  const env = await getRuntimeEnv();
 
-  // Map plan IDs to their Razorpay plan IDs (for checkout button)
-  const monthlyPlanIds: Partial<Record<PlanId, string>> = {
-    freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ?? undefined,
-    teams: env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ?? undefined,
-  };
-  const annualPlanIds: Partial<Record<PlanId, string>> = {
-    freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL ?? undefined,
-    teams: env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL ?? undefined,
-  };
+  // coming-soon-restore: uncomment these lines when Razorpay plans go live
+  // const env = await getRuntimeEnv();
+  // const monthlyPlanIds: Partial<Record<PlanId, string>> = {
+  //   freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ?? undefined,
+  //   teams: env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ?? undefined,
+  // };
+  // const annualPlanIds: Partial<Record<PlanId, string>> = {
+  //   freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL ?? undefined,
+  //   teams: env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL ?? undefined,
+  // };
 
   return (
     <>
       <PageHeader
         title="Plans"
-        description="Choose the plan that fits your workflow. Prices shown in USD. All plans include a 7-day grace period on payment failure."
+        description="Choose the plan that fits your workflow."
       />
 
       <div className="space-y-8">
+        {/* Coming soon banner */}
+        <div className="flex items-start gap-3 rounded-lg border border-[var(--color-accent-200)] bg-[var(--color-accent-50)] px-4 py-3 text-sm text-[var(--color-accent-700)]">
+          <Clock aria-hidden className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <strong>Billing is coming soon.</strong> All workspaces currently have unlimited access
+            while we finalise pricing. Join the waitlist below to be notified when paid plans launch.
+          </div>
+        </div>
+
         {/* Plan comparison grid */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {PLAN_ORDER.map((planId) => {
             const plan = PLANS[planId];
             const isCurrentPlan = planId === currentPlan;
-            const isUpgrade = comparePlans(planId, currentPlan) > 0;
-            const monthlyPriceId = monthlyPlanIds[planId];
-            const annualPriceId = annualPlanIds[planId];
 
             return (
               <Card
@@ -105,19 +109,7 @@ export default async function BillingPage() {
 
                   {/* Price */}
                   <div className="mt-3">
-                    {plan.priceMonthlyUsd !== null ? (
-                      <div>
-                        <span className="text-2xl font-bold text-[var(--color-text)]">
-                          ${plan.priceMonthlyUsd}
-                        </span>
-                        <span className="text-xs text-[var(--color-text-muted)]">/mo</span>
-                        {plan.priceAnnualUsd !== null && (
-                          <p className="mt-0.5 text-[11px] text-[var(--color-text-subtle)]">
-                            ${plan.priceAnnualUsd}/mo billed annually
-                          </p>
-                        )}
-                      </div>
-                    ) : planId === "free" ? (
+                    {planId === "free" ? (
                       <div>
                         <span className="text-2xl font-bold text-[var(--color-text)]">Free</span>
                       </div>
@@ -142,7 +134,7 @@ export default async function BillingPage() {
                     )}
                   </div>
 
-                  {/* CTA */}
+                  {/* CTA — coming-soon-restore: replace with BillingCheckoutButton when live */}
                   <div className="mt-4">
                     {isCurrentPlan ? (
                       <Button variant="secondary" size="sm" disabled className="w-full">
@@ -155,20 +147,21 @@ export default async function BillingPage() {
                       >
                         Contact us
                       </a>
-                    ) : isUpgrade && (monthlyPriceId ?? annualPriceId) ? (
-                      <BillingCheckoutButton
-                        planId={planId}
-                        planName={plan.name}
-                        monthlyPriceId={monthlyPriceId ?? null}
-                        annualPriceId={annualPriceId ?? null}
-                      />
-                    ) : isUpgrade ? (
-                      <Button variant="primary" size="sm" disabled className="w-full">
-                        Choose {plan.name}
+                    ) : planId === "free" ? (
+                      <Button variant="ghost" size="sm" disabled className="w-full">
+                        Your current tier
                       </Button>
                     ) : (
-                      <Button variant="ghost" size="sm" disabled className="w-full">
-                        Downgrade via portal
+                      /* coming-soon-restore: replace the button below with
+                         <BillingCheckoutButton planId={planId} ... /> */
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="w-full"
+                        disabled
+                        title="Billing coming soon — join the waitlist"
+                      >
+                        Join waitlist
                       </Button>
                     )}
                   </div>
@@ -188,26 +181,6 @@ export default async function BillingPage() {
                     <LimitRow
                       label="Seats"
                       value={plan.maxSeats === null ? "Unlimited" : `${plan.maxSeats}`}
-                    />
-                    <LimitRow
-                      label="Audits / mo"
-                      value={
-                        plan.limits.audits === null
-                          ? "Unlimited"
-                          : plan.limits.audits !== undefined
-                          ? String(plan.limits.audits)
-                          : "TBD"
-                      }
-                    />
-                    <LimitRow
-                      label="AI drafts / mo"
-                      value={
-                        plan.limits.ai_drafts === null
-                          ? "Unlimited"
-                          : plan.limits.ai_drafts !== undefined
-                          ? String(plan.limits.ai_drafts)
-                          : "—"
-                      }
                     />
                   </div>
                 </CardBody>
@@ -275,14 +248,18 @@ export default async function BillingPage() {
           </CardBody>
         </Card>
 
-        <p className="text-[11px] text-[var(--color-text-subtle)]">
-          Prices subject to change. Annual billing saves approximately 20%.
-          Usage limits reset on the 1st of each UTC calendar month. Manage or cancel
-          your subscription at any time via{" "}
-          <a href="/billing/manage" className="underline hover:no-underline">
-            Manage subscription
-          </a>. Questions? Email support.
-        </p>
+        {/* Waitlist form */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Join the waitlist</CardTitle>
+            <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+              We&apos;ll let you know when paid plans launch. No spam.
+            </p>
+          </CardHeader>
+          <CardBody>
+            <WaitlistForm source="billing_page" />
+          </CardBody>
+        </Card>
       </div>
     </>
   );

@@ -248,8 +248,10 @@ export function buildTemplateDraft(input: BuildDraftInput): DraftOutput {
 }
 
 /* -----------------------------------------------------------------
- * Anthropic Claude provider (optional)
+ * Gemini provider (replaces Anthropic)
  * ----------------------------------------------------------------- */
+
+import { callGemini, getGeminiModelDraft } from "@/lib/ai/gemini";
 
 const aiDraftSchema = z.object({
   subject: z.string().max(200).nullable().optional(),
@@ -257,17 +259,14 @@ const aiDraftSchema = z.object({
   personalization_evidence: z.array(z.string().min(3).max(400)).min(1).max(6),
 });
 
-const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL = "claude-sonnet-4-6";
-
 export async function buildAiDraft(
   input: BuildDraftInput,
   env: Readonly<Record<string, string | undefined>>
 ): Promise<DraftOutput> {
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error("ANTHROPIC_API_KEY not configured");
+  const key = env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY not configured");
 
-  const model = env.ANTHROPIC_MODEL ?? DEFAULT_MODEL;
+  const model = await getGeminiModelDraft();
   const channel = pickChannel(input.lead, input.channel);
   const service = pickService(input.brief, input.services);
   const studio = input.studioName ?? DEFAULT_STUDIO;
@@ -322,36 +321,15 @@ export async function buildAiDraft(
     `Produce a ${channel} draft for ${input.lead.businessName}. ` +
     `personalization_evidence must list the specific pieces of context you drew from.`;
 
-  const resp = await fetch(ANTHROPIC_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
+  const result = await callGemini({
+    model,
+    systemPrompt,
+    userPrompt,
+    maxOutputTokens: 800,
+    temperature: 0.6,
   });
 
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => "");
-    throw new Error(`Anthropic HTTP ${resp.status}: ${text.slice(0, 200)}`);
-  }
-
-  const data = (await resp.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-  };
-  const text = (data.content ?? [])
-    .filter((c) => c.type === "text" && typeof c.text === "string")
-    .map((c) => c.text!)
-    .join("")
-    .trim();
-
-  const jsonText = extractJson(text);
+  const jsonText = extractJson(result.text);
   const parsed = aiDraftSchema.safeParse(JSON.parse(jsonText));
   if (!parsed.success) {
     throw new Error(`AI output failed schema: ${parsed.error.issues[0]?.message ?? "unknown"}`);

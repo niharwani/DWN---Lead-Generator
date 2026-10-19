@@ -277,22 +277,42 @@ export function IntegrationsSection(props: IntegrationsSectionProps) {
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-subtle)]">
             Email providers
           </h3>
-          <ul className="divide-y divide-[var(--color-border)]">
-            <OAuthIntegrationRow
-              name="Gmail"
-              connected={props.gmailConnected}
-              connectedEmail={props.gmailEmail}
-              connectHref="/api/gmail/oauth/start"
-              disconnectAction="/api/gmail/disconnect"
-            />
-            <OAuthIntegrationRow
-              name="Outlook / Microsoft 365"
-              connected={props.outlookConnected}
-              connectedEmail={props.outlookEmail}
-              connectHref="/api/outlook/oauth/start"
-              disconnectAction="/api/outlook/disconnect"
-            />
-          </ul>
+          {/* coming-soon-restore: replace the informational row below with the two
+              OAuthIntegrationRow components (Gmail and Outlook). Re-enable them by
+              removing this info block and uncommenting the OAuthIntegrationRow calls below.
+
+              <OAuthIntegrationRow
+                name="Gmail"
+                connected={props.gmailConnected}
+                connectedEmail={props.gmailEmail}
+                connectHref="/api/gmail/oauth/start"
+                disconnectAction="/api/gmail/disconnect"
+              />
+              <OAuthIntegrationRow
+                name="Outlook / Microsoft 365"
+                connected={props.outlookConnected}
+                connectedEmail={props.outlookEmail}
+                connectHref="/api/outlook/oauth/start"
+                disconnectAction="/api/outlook/disconnect"
+              />
+          */}
+          <div className="rounded-sm border border-[var(--color-border)] bg-[var(--color-neutral-50)] px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <Mail
+                aria-hidden
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--color-text-subtle)]"
+              />
+              <div>
+                <span className="text-sm text-[var(--color-text-muted)]">
+                  Direct Gmail / Outlook sending is temporarily disabled.
+                </span>
+                <p className="mt-0.5 text-xs text-[var(--color-text-subtle)]">
+                  Use the compose buttons on lead drafts to send outreach via your mail client.
+                  Direct OAuth sending will be re-enabled in a future update.
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* API keys */}
@@ -314,10 +334,10 @@ export function IntegrationsSection(props: IntegrationsSectionProps) {
               description="Optional enhancement to the website audit."
             />
             <ApiKeyRow
-              name="Anthropic API (AI provider)"
-              envKey="ANTHROPIC_API_KEY"
+              name="Gemini API (AI provider)"
+              envKey="GEMINI_API_KEY"
               configured={props.anthropicConfigured}
-              description="Powers AI-generated opportunity briefs and outreach drafts. Falls back to templates if absent."
+              description="Powers AI-generated outreach drafts, reply triage, and lead enrichment. Falls back to templates if absent."
             />
           </ul>
         </div>

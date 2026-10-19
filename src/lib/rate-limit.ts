@@ -25,6 +25,8 @@ export const BUCKETS = {
   billing_checkout: { limit: 10, windowMs: 60_000 }, // 10 checkout requests / minute / workspace
   // Phase F: member invites
   invite_send: { limit: 20, windowMs: 3_600_000 }, // 20 invites / hour / workspace
+  // Waitlist (pre-billing soft-launch)
+  waitlist: { limit: 10, windowMs: 3_600_000 }, // 10 waitlist submissions / hour / IP
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;

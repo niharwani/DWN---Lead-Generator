@@ -2844,6 +2844,65 @@ export async function insertCalcomLinkIntoDraftAction(
   revalidateAll(draft.leadId);
 }
 
+/* -----------------------------------------------------------------
+ * Manual compose — "Mark as sent" after using Gmail/Outlook web links
+ * -----------------------------------------------------------------
+ * Called after the user sends a draft manually using the compose-link
+ * buttons (Gmail web, Outlook web, mailto). Transitions draft to
+ * `contacted`, logs an `outreach_sent_manual` activity, and bumps
+ * lastContactedAt on the lead.
+ */
+
+export async function markDraftSentManuallyAction(
+  formDataOrDraftId: FormData | string
+): Promise<void> {
+  const draftId =
+    typeof formDataOrDraftId === "string"
+      ? formDataOrDraftId
+      : String(formDataOrDraftId.get("draftId") ?? "").trim();
+  if (!draftId) throw new Error("draftId is required.");
+
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const draft = await getDraft(db, owner.id, draftId);
+  if (!draft) throw new Error("Draft not found.");
+  if (draft.status !== "approved") {
+    throw new Error("Only approved drafts can be marked as sent.");
+  }
+  if (draft.channel !== "email") {
+    throw new Error("Manual send is only available for email channel drafts.");
+  }
+
+  const lead = await getLead(db, owner.id, draft.leadId);
+  if (!lead) throw new Error("Lead not found.");
+  if (lead.doNotContact.flagged) {
+    throw new Error("This lead is marked do-not-contact. Send is blocked.");
+  }
+
+  const now = new Date().toISOString();
+
+  // Transition draft to contacted
+  await transitionDraft(db, owner.id, draftId, "contacted");
+
+  // Bump lastContactedAt + pipeline stage
+  await updateLead(db, owner.id, lead.id, {
+    lastContactedAt: now,
+    pipelineStage: "contacted",
+  });
+
+  // Log activity
+  await createActivity(db, owner.id, {
+    leadId: lead.id,
+    activityType: "outreach_sent_manual",
+    title: `Manually sent to ${lead.businessName}`,
+    description: draft.subject ?? "No subject",
+    metadata: { via: "manual_compose", draftId },
+  });
+
+  revalidateAll(lead.id);
+}
+
 /* =================================================================
  * Phase H — Admin-only server actions
  *

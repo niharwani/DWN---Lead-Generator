@@ -7,15 +7,13 @@
  * Rate-limited to 30 enrichments/minute per workspace.
  */
 
-import { and, asc, desc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, or } from "drizzle-orm";
 import type { Db } from "@/lib/db/client";
 import { leadSources, leads, profiles } from "@/lib/db/schema";
 import { createActivity, createAudit, getLatestAudit, updateLead } from "@/lib/db/repos";
 import { runAudit } from "@/lib/audit/engine";
+import { callGemini, getGeminiModelClassifier } from "@/lib/ai/gemini";
 import type { RuntimeEnv } from "@/lib/env";
-
-const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
-const DEFAULT_HAIKU_MODEL = "claude-haiku-4-5";
 
 export type EnrichmentSweepResult = {
   evaluated: number;
@@ -29,34 +27,21 @@ async function classifyIndustry(
   websiteSnippet: string,
   env: RuntimeEnv
 ): Promise<string | undefined> {
-  const key = env.ANTHROPIC_API_KEY;
+  const key = env.GEMINI_API_KEY;
   if (!key) return undefined;
 
-  const model = env.ANTHROPIC_MODEL_HAIKU ?? DEFAULT_HAIKU_MODEL;
-  const prompt = `Business: "${businessName}"\nNiche: ${niche}\nWebsite snippet: ${websiteSnippet.slice(0, 200)}\n\nReturn a 1-3 word industry classification only. No explanation.`;
+  const model = await getGeminiModelClassifier();
+  const userPrompt = `Business: "${businessName}"\nNiche: ${niche}\nWebsite snippet: ${websiteSnippet.slice(0, 200)}\n\nReturn a 1-3 word industry classification only. No explanation.`;
 
   try {
-    const resp = await fetch(ANTHROPIC_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 32,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const result = await callGemini({
+      model,
+      userPrompt,
+      maxOutputTokens: 32,
+      temperature: 0,
     });
-    if (!resp.ok) return undefined;
-    const data = (await resp.json()) as { content?: Array<{ type: string; text?: string }> };
-    const text = (data.content ?? [])
-      .filter((c) => c.type === "text")
-      .map((c) => c.text ?? "")
-      .join("")
-      .trim();
-    return text.slice(0, 80) || undefined;
+    if (result.text === "__gemini_stub__") return undefined;
+    return result.text.slice(0, 80) || undefined;
   } catch {
     return undefined;
   }
@@ -141,7 +126,7 @@ export async function runEnrichmentPass(
           leadId: leadRow.id,
           sourceName: "auto_enrichment",
           observedAt: new Date().toISOString(),
-          evidence: { industry, method: "haiku_classification" },
+          evidence: { industry, method: "gemini_classification" },
         });
         enriched = true;
       }

@@ -1,14 +1,17 @@
 import Link from "next/link";
-import { Check, Minus } from "lucide-react";
+import { Check, Minus, Clock } from "lucide-react";
 import { PLANS, type Feature } from "@/lib/billing/plans";
+import { WaitlistForm } from "@/components/waitlist/waitlist-form";
 
 /* ============================================================================
- * Pricing page
+ * Pricing page — Coming Soon mode
  *
- * Reads directly from PLANS in src/lib/billing/plans.ts.
- * The Razorpay agent renames stripePriceId* → razorpayPlanId* — this page
- * reads the plan shape but does not reference price IDs directly (checkout is
- * handled server-side). Price display uses priceMonthlyUsd / priceAnnualUsd.
+ * COMING SOON: Billing is not yet live.
+ * "Get started" CTA on paid tiers replaced with waitlist buttons.
+ * WaitlistForm at the bottom collects interest.
+ *
+ * coming-soon-restore: swap "Join waitlist" buttons back to "Get started"
+ * Links pointing to /login and remove the coming-soon banner + waitlist form.
  * ========================================================================== */
 
 export const metadata = {
@@ -121,7 +124,7 @@ function PlanCard({
       "3 active campaigns",
       "500 audits / month",
       "300 AI drafts / month",
-      "BYO Anthropic key for unlimited AI",
+      "BYO Gemini key for unlimited AI",
       "7-day activity history",
     ],
     teams: [
@@ -129,7 +132,7 @@ function PlanCard({
       "Unlimited leads + campaigns",
       "2,500 audits / month",
       "2,000 AI drafts / month",
-      "BYO Anthropic key for unlimited AI",
+      "BYO Gemini key for unlimited AI",
       "90-day activity history",
       "Priority email support + Slack-Connect",
     ],
@@ -159,16 +162,28 @@ function PlanCard({
 
       <PriceDisplay plan={plan} />
 
-      <Link
-        href="/login"
-        className={`mt-5 inline-flex h-9 items-center justify-center rounded-md px-4 text-sm font-medium transition-colors ${
-          highlighted
-            ? "bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)]"
-            : "border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-neutral-100)]"
-        }`}
-      >
-        Get started
-      </Link>
+      {/* CTA — coming-soon-restore: for free tier keep the Sign in link;
+          for paid tiers, replace the scrolling anchor with:
+          <Link href="/login" className="...">Get started</Link> */}
+      {planId === "free" ? (
+        <Link
+          href="/login"
+          className={`mt-5 inline-flex h-9 items-center justify-center rounded-md px-4 text-sm font-medium transition-colors border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-neutral-100)]`}
+        >
+          Sign in
+        </Link>
+      ) : (
+        <a
+          href="#waitlist"
+          className={`mt-5 inline-flex h-9 items-center justify-center rounded-md px-4 text-sm font-medium transition-colors ${
+            highlighted
+              ? "bg-[var(--color-accent-600)] text-white hover:bg-[var(--color-accent-700)]"
+              : "border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] hover:bg-[var(--color-neutral-100)]"
+          }`}
+        >
+          Join waitlist
+        </a>
+      )}
 
       <hr className="my-5 border-[var(--color-border)]" />
 
@@ -205,7 +220,7 @@ export default function PricingPage() {
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-16 md:px-6">
       {/* Hero */}
-      <div className="mb-14 text-center">
+      <div className="mb-8 text-center">
         <h1 className="mb-3 text-4xl font-semibold text-[var(--color-text)]">
           Simple, transparent pricing
         </h1>
@@ -215,6 +230,16 @@ export default function PricingPage() {
         <p className="mt-2 text-sm text-[var(--color-text-subtle)]">
           Annual billing saves ~20%. Prices in USD.
         </p>
+      </div>
+
+      {/* Coming soon banner */}
+      <div className="mb-10 flex items-start gap-3 rounded-xl border border-[var(--color-accent-200)] bg-[var(--color-accent-50)] px-5 py-4 text-sm text-[var(--color-accent-700)]">
+        <Clock aria-hidden className="mt-0.5 h-5 w-5 shrink-0" />
+        <div>
+          <strong className="font-semibold">Coming soon — join the waitlist.</strong>{" "}
+          Paid plans are in final prep. All accounts have unlimited access while we finish pricing.
+          Scroll down to reserve your spot.
+        </div>
       </div>
 
       {/* Plan cards */}
@@ -315,6 +340,21 @@ export default function PricingPage() {
         </div>
       </section>
 
+      {/* Waitlist section */}
+      <section id="waitlist" className="mt-16 scroll-mt-16">
+        <div className="rounded-xl border border-[var(--color-accent-200)] bg-[var(--color-accent-50)] p-8">
+          <h2 className="mb-2 text-2xl font-semibold text-[var(--color-text)]">
+            Reserve your spot
+          </h2>
+          <p className="mb-6 text-[var(--color-text-muted)]">
+            Paid plans are launching soon. Sign up to be first in line and get an early-adopter discount.
+          </p>
+          <div className="max-w-lg">
+            <WaitlistForm source="pricing_page" />
+          </div>
+        </div>
+      </section>
+
       {/* FAQ */}
       <section className="mt-16">
         <h2 className="mb-6 text-2xl font-semibold text-[var(--color-text)]">
@@ -323,8 +363,8 @@ export default function PricingPage() {
         <div className="grid gap-5 md:grid-cols-2">
           {[
             {
-              q: "Can I bring my own Anthropic API key?",
-              a: "Yes. On Freelancer and Teams plans you can plug in your own key and AI drafts won't count against the monthly quota. BYO key = effectively unlimited AI.",
+              q: "Can I bring my own AI API key?",
+              a: "Yes. On Freelancer and Teams plans you can plug in your own Gemini key and AI drafts won't count against the monthly quota. BYO key = effectively unlimited AI.",
             },
             {
               q: "Does Lead Engine auto-send emails?",
@@ -349,22 +389,6 @@ export default function PricingPage() {
           ))}
         </div>
       </section>
-
-      {/* CTA */}
-      <div className="mt-16 rounded-xl bg-[var(--color-accent-50)] p-8 text-center">
-        <h2 className="mb-2 text-2xl font-semibold text-[var(--color-text)]">
-          Start your free account today
-        </h2>
-        <p className="mb-6 text-[var(--color-text-muted)]">
-          50 leads, 1 campaign, no card required.
-        </p>
-        <Link
-          href="/login"
-          className="inline-flex h-10 items-center rounded-md bg-[var(--color-accent-600)] px-6 text-sm font-semibold text-white transition-colors hover:bg-[var(--color-accent-700)]"
-        >
-          Get started free
-        </Link>
-      </div>
     </div>
   );
 }

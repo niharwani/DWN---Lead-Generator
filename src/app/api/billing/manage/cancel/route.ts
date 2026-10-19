@@ -11,13 +11,23 @@ import { getWorkspace, updateRazorpayFields } from "@/lib/db/repos/workspaces";
 import { cancelSubscription } from "@/lib/billing/razorpay";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // TODO: unblock when Razorpay plans are live in prod
+  // coming-soon-restore: remove this block to re-enable subscription cancellation
+  return NextResponse.json(
+    { error: "coming_soon", message: "Billing is coming soon. Please join the waitlist." },
+    { status: 503 }
+  );
+
+  // ---- Razorpay code below — kept intact for when billing goes live ----
+  // eslint-disable-next-line no-unreachable
   let owner;
   try {
     owner = await requireOwner();
-  } catch (response) {
+  } catch (response: unknown) {
     if (response instanceof Response) {
-      return NextResponse.json(await response.json().catch(() => ({})), {
-        status: response.status,
+      const r = response as Response;
+      return NextResponse.json(await r.json().catch(() => ({})), {
+        status: r.status,
       });
     }
     throw response;
@@ -25,8 +35,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const db = await getDb();
   const workspace = await getWorkspace(db, owner.id);
+  const subscriptionId = workspace?.razorpaySubscriptionId;
 
-  if (!workspace?.razorpaySubscriptionId) {
+  if (!subscriptionId) {
     return NextResponse.json(
       { error: "No active subscription found." },
       { status: 422 }
@@ -44,7 +55,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    await cancelSubscription(workspace.razorpaySubscriptionId, cancelAtCycleEnd);
+    await cancelSubscription(subscriptionId as string, cancelAtCycleEnd);
 
     if (!cancelAtCycleEnd) {
       // Immediate cancel — downgrade now

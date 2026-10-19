@@ -1,18 +1,16 @@
 /**
- * Claude Haiku reply-triage classifier.
+ * Gemini reply-triage classifier.
  *
  * Takes the plain-text snippet of an inbound reply and returns a structured
  * classification. Falls back to `unclear` on any failure so the cron never
  * crashes on a single bad reply.
  *
- * Model is configurable via ANTHROPIC_MODEL_HAIKU (default claude-haiku-4-5).
+ * Model is configurable via GEMINI_MODEL_CLASSIFIER (default gemini-2.5-flash-lite).
  * Prompts are kept under 1 K input tokens for cost control.
  */
 
 import { z } from "zod";
-
-const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages";
-const DEFAULT_HAIKU_MODEL = "claude-haiku-4-5";
+import { callGemini, getGeminiModelClassifier } from "@/lib/ai/gemini";
 
 export const replySentimentValues = [
   "interested",
@@ -68,49 +66,28 @@ export async function classifyReply(
   snippet: string,
   env: Readonly<Record<string, string | undefined>>
 ): Promise<TriageResult> {
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) return { ...FALLBACK, reason: "ANTHROPIC_API_KEY not configured." };
+  const key = env.GEMINI_API_KEY;
+  if (!key) return { ...FALLBACK, reason: "GEMINI_API_KEY not configured." };
 
-  const model = env.ANTHROPIC_MODEL_HAIKU ?? DEFAULT_HAIKU_MODEL;
+  const model = await getGeminiModelClassifier();
 
   // Truncate to keep under 1K input tokens (~750 chars ≈ ~250 tokens for snippet)
   const truncated = snippet.slice(0, 600);
 
   try {
-    const resp = await fetch(ANTHROPIC_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 256,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: `Classify this reply:\n\n${truncated}`,
-          },
-        ],
-      }),
+    const result = await callGemini({
+      model,
+      systemPrompt: SYSTEM_PROMPT,
+      userPrompt: `Classify this reply:\n\n${truncated}`,
+      maxOutputTokens: 256,
+      temperature: 0,
     });
 
-    if (!resp.ok) {
-      return { ...FALLBACK, reason: `Anthropic HTTP ${resp.status}` };
+    if (result.text === "__gemini_stub__") {
+      return { ...FALLBACK, reason: "Gemini dev-stub active — needs manual review." };
     }
 
-    const data = (await resp.json()) as {
-      content?: Array<{ type: string; text?: string }>;
-    };
-    const text = (data.content ?? [])
-      .filter((c) => c.type === "text" && typeof c.text === "string")
-      .map((c) => c.text!)
-      .join("")
-      .trim();
-
-    const jsonText = extractJson(text);
+    const jsonText = extractJson(result.text);
     const parsed = triageSchema.safeParse(JSON.parse(jsonText));
     if (!parsed.success) {
       return { ...FALLBACK, reason: "Schema validation failed." };

@@ -36,10 +36,12 @@ import {
   scoreLeadAction,
   toggleDoNotContactAction,
   assignLeadAction,
-  sendDraftViaGmailAction,
-  sendDraftViaOutlookAction,
+  // coming-soon-restore: uncomment when direct Gmail/Outlook OAuth send is re-enabled
+  // sendDraftViaGmailAction,
+  // sendDraftViaOutlookAction,
   insertCalcomLinkIntoDraftAction,
 } from "@/lib/actions";
+import { ComposeButtons } from "@/components/outreach/compose-buttons";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   pageGetCampaign,
@@ -281,6 +283,7 @@ export default async function LeadDetailPage({
           <OutreachDraftsSection
             drafts={drafts}
             leadId={lead.id}
+            leadEmail={lead.publicEmail}
             doNotContact={lead.doNotContact.flagged}
             gmailConnected={gmailConnected}
             outlookConnected={outlookConnected}
@@ -935,12 +938,14 @@ function BriefCell({ label, value }: { label: string; value: string }) {
 function OutreachDraftsSection({
   drafts,
   leadId,
+  leadEmail,
   doNotContact,
   gmailConnected,
   outlookConnected,
 }: {
   drafts: import("@/lib/demo/types").OutreachDraft[];
   leadId: string;
+  leadEmail?: string;
   doNotContact: boolean;
   gmailConnected: boolean;
   outlookConnected: boolean;
@@ -1083,16 +1088,36 @@ function OutreachDraftsSection({
                   ) : null}
                   {d.status === "approved" ? (
                     <>
-                      <ActionButton
-                        action={markContactedAction}
-                        hiddenFields={{ draftId: d.id }}
-                        variant="primary"
-                        size="sm"
-                      >
-                        <Send aria-hidden className="h-3 w-3" />
-                        Mark contacted
-                      </ActionButton>
-                      {/* Send via Gmail — only for email channel, only when connected */}
+                      {/* Mark contacted (non-email channels or fallback) */}
+                      {d.channel !== "email" && (
+                        <ActionButton
+                          action={markContactedAction}
+                          hiddenFields={{ draftId: d.id }}
+                          variant="primary"
+                          size="sm"
+                        >
+                          <Send aria-hidden className="h-3 w-3" />
+                          Mark contacted
+                        </ActionButton>
+                      )}
+
+                      {/* Email channel: compose links + mark-as-sent button */}
+                      {d.channel === "email" && leadEmail ? (
+                        <ComposeButtons
+                          draftId={d.id}
+                          to={leadEmail}
+                          subject={d.subject ?? ""}
+                          body={d.body}
+                        />
+                      ) : d.channel === "email" && !leadEmail ? (
+                        <span className="text-[11px] text-[var(--color-text-subtle)]">
+                          No public email — add one to enable compose links.
+                        </span>
+                      ) : null}
+
+                      {/* coming-soon-restore: uncomment the blocks below to re-enable
+                          direct Gmail / Outlook OAuth send when the integration is re-enabled.
+
                       {d.channel === "email" && gmailConnected ? (
                         <ActionButton
                           action={sendDraftViaGmailAction}
@@ -1115,7 +1140,6 @@ function OutreachDraftsSection({
                           Send via Gmail
                         </Button>
                       ) : null}
-                      {/* Send via Outlook — only for email channel, only when connected */}
                       {d.channel === "email" && outlookConnected ? (
                         <ActionButton
                           action={sendDraftViaOutlookAction}
@@ -1138,6 +1162,7 @@ function OutreachDraftsSection({
                           Send via Outlook
                         </Button>
                       ) : null}
+                      */}
                     </>
                   ) : null}
                   {d.status === "contacted" ? (

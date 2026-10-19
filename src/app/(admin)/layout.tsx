@@ -30,6 +30,12 @@ export default async function AdminShellLayout({ children }: { children: ReactNo
             >
               Comp plans
             </Link>
+            <Link
+              href="/admin/waitlist"
+              className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            >
+              Waitlist
+            </Link>
           </nav>
 
           <div className="ml-auto flex items-center gap-3">

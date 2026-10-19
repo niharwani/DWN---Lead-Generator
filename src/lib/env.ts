@@ -42,6 +42,10 @@ const EXPOSED_KEYS = [
   "OUTLOOK_REDIRECT_URI",
   // Phase H — super-admin gate
   "SUPER_ADMIN_EMAILS",
+  // Gemini AI provider (replaces Anthropic for drafts, triage, enrichment)
+  "GEMINI_API_KEY",
+  "GEMINI_MODEL_DRAFT",
+  "GEMINI_MODEL_CLASSIFIER",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

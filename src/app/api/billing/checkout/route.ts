@@ -19,13 +19,23 @@ import { getDb } from "@/lib/db/client";
 import { getWorkspace, updateRazorpayFields } from "@/lib/db/repos/workspaces";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // TODO: unblock when Razorpay plans are live in prod
+  // coming-soon-restore: remove this block and the Razorpay code below runs automatically
+  return Response.json(
+    { error: "coming_soon", message: "Billing is coming soon. Please join the waitlist." },
+    { status: 503 }
+  ) as NextResponse;
+
+  // ---- Razorpay code below — kept intact for when billing goes live ----
+  // eslint-disable-next-line no-unreachable
   let owner;
   try {
     owner = await requireOwner();
-  } catch (response) {
+  } catch (response: unknown) {
     if (response instanceof Response) {
-      return NextResponse.json(await response.json().catch(() => ({})), {
-        status: response.status,
+      const r = response as Response;
+      return NextResponse.json(await r.json().catch(() => ({})), {
+        status: r.status,
       });
     }
     throw response;
@@ -34,13 +44,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // Rate limit
   try {
     assertWithinRateLimit(owner.id, "billing_checkout");
-  } catch (err) {
+  } catch (err: unknown) {
     if (err instanceof RateLimitError) {
+      const rl = err as RateLimitError;
       return NextResponse.json(
-        { error: { code: "rate_limited", message: err.message } },
+        { error: { code: "rate_limited", message: rl.message } },
         {
           status: 429,
-          headers: { "Retry-After": String(err.retryAfterSeconds) },
+          headers: { "Retry-After": String(rl.retryAfterSeconds) },
         }
       );
     }
@@ -79,7 +90,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     let workspace = await getWorkspace(db, owner.id);
 
     // Ensure workspace has a Razorpay customer ID
-    let razorpayCustomerId = workspace?.razorpayCustomerId ?? null;
+    let razorpayCustomerId: string | undefined = workspace?.razorpayCustomerId ?? undefined;
     if (!razorpayCustomerId) {
       // Create a customer — use email from owner; name from workspace
       const customer = await createCustomer({
@@ -94,7 +105,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Create the Razorpay subscription
     const subscription = await createSubscription({
-      planId,
+      planId: planId as string,
       workspaceId: owner.id,
       totalCount,
       notes: {

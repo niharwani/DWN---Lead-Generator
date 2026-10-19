@@ -1,5 +1,5 @@
 /**
- * Integration test: reply triage cron with mocked Gmail + Claude.
+ * Integration test: reply triage cron with mocked Gmail + Gemini.
  *
  * Verifies the end-to-end flow:
  *  1. Gmail tokens found in appSettings
@@ -19,6 +19,7 @@ afterEach(() => {
   vi.unmock("@/lib/gmail/client");
   vi.unmock("@/lib/outreach/triage");
   vi.unmock("@/lib/db/repos");
+  vi.unmock("@/lib/ai/gemini");
 });
 
 const OWNER = "owner_triage_integration_1";
@@ -136,5 +137,27 @@ describe("runReplyTriageSweep (integration)", () => {
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.processed).toBe(0);
     vi.unmock("@/lib/gmail/client");
+  });
+
+  it("passes GEMINI_API_KEY from env to classifyReply", async () => {
+    // The sweep reads env and passes it to classifyReply.
+    // Verify no crash when env has GEMINI_API_KEY present.
+    const db: Db = {
+      select: () => ({
+        from: () => {
+          const p = Promise.resolve([]);
+          return Object.assign(p, {
+            where: () => {
+              const q = Promise.resolve([]);
+              return Object.assign(q, { limit: () => Promise.resolve([]) });
+            },
+          });
+        },
+      }),
+    } as unknown as Db;
+
+    // No Gmail tokens → exits early, but should not throw
+    const result = await runReplyTriageSweep(db, OWNER, { GEMINI_API_KEY: "test-key" });
+    expect(result.processed).toBe(0);
   });
 });

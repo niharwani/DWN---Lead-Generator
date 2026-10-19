@@ -246,6 +246,7 @@ export type ActivityType =
   | "draft_created"
   | "draft_approved"
   | "contact_logged"
+  | "outreach_sent_manual"
   | "reply_logged"
   | "meeting_booked"
   | "proposal_sent"

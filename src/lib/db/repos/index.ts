@@ -23,3 +23,5 @@ export * from "./webhooks";
 // Phase A additions
 export * from "./workspaces";
 export * from "./sessions";
+// Waitlist (pre-billing)
+export * from "./waitlist";

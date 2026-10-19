@@ -958,3 +958,32 @@ export type FollowUpCadence = typeof followUpCadences.$inferSelect;
 export type Webhook = typeof webhooks.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type NotificationPreference = typeof notificationPreferences.$inferSelect;
+
+/* --------------------------------------------------------------------------
+ * waitlist — soft-launch waitlist capture (pre-billing)
+ * -------------------------------------------------------------------------- */
+export const waitlist = sqliteTable(
+  "waitlist",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    phone: text("phone"),
+    requestedPlan: text("requested_plan"),
+    note: text("note"),
+    source: text("source"),
+    workspaceId: text("workspace_id").references(() => workspaces.id, {
+      onDelete: "set null",
+    }),
+    userAgent: text("user_agent"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    emailIdx: index("waitlist_email_idx").on(t.email),
+    createdIdx: index("waitlist_created_idx").on(t.createdAt),
+  })
+);
+
+export type WaitlistEntry = typeof waitlist.$inferSelect;
+export type NewWaitlistEntry = typeof waitlist.$inferInsert;

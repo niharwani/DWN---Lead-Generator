@@ -1,38 +1,58 @@
 /**
  * /billing/manage — Subscription management page.
  *
- * Razorpay has no hosted customer portal equivalent. This page provides
- * in-app controls for Pause, Resume, and Cancel.
- *
- * Actions are wired to server actions in src/lib/actions.ts.
+ * COMING SOON: Billing is not yet live. Shows a simple informational message.
+ * The original Razorpay subscription management UI is commented out below for
+ * easy restoration once billing goes live.
  */
 
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { requirePageOwner } from "@/lib/data";
-import { getDb } from "@/lib/db/client";
-import { getWorkspace } from "@/lib/db/repos/workspaces";
-import { ManageSubscriptionButtons } from "./_components/manage-buttons";
 
 export const metadata: Metadata = { title: "Manage Subscription" };
 
 export default async function ManageSubscriptionPage() {
-  const owner = await requirePageOwner();
-  const db = await getDb();
-  const workspace = await getWorkspace(db, owner.id);
+  // coming-soon-restore: uncomment to re-enable subscription management
+  // const owner = await requirePageOwner();
+  // const db = await getDb();
+  // const workspace = await getWorkspace(db, owner.id);
+  // const subscriptionId = workspace?.razorpaySubscriptionId ?? null;
+  // const currentPlan = workspace?.plan ?? "free";
 
-  const subscriptionId = workspace?.razorpaySubscriptionId ?? null;
-  const currentPlan = workspace?.plan ?? "free";
+  // Page still needs owner for auth guard
+  await requirePageOwner();
 
   return (
     <>
       <PageHeader
         title="Manage subscription"
-        description="Pause, resume, or cancel your subscription. Changes take effect immediately or at the end of the billing cycle."
+        description="Subscription management coming soon."
       />
 
       <div className="max-w-lg space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>No active subscription</CardTitle>
+          </CardHeader>
+          <CardBody>
+            <p className="text-sm text-[var(--color-text-muted)]">
+              Billing is coming soon — all workspaces currently have unlimited access.
+            </p>
+            <p className="mt-3 text-sm text-[var(--color-text-muted)]">
+              <a href="/billing" className="text-[var(--color-accent-700)] underline hover:no-underline">
+                View plans
+              </a>{" "}
+              to join the waitlist and be notified when paid plans launch.
+            </p>
+          </CardBody>
+        </Card>
+
+        {/* coming-soon-restore: uncomment the ManageSubscriptionButtons block below
+            and re-import ManageSubscriptionButtons from "./_components/manage-buttons"
+            to re-enable Razorpay subscription controls
+
         <Card>
           <CardHeader>
             <CardTitle>Subscription</CardTitle>
@@ -52,7 +72,6 @@ export default async function ManageSubscriptionPage() {
                 </span>
               </div>
             </div>
-
             {subscriptionId ? (
               <ManageSubscriptionButtons />
             ) : (
@@ -66,6 +85,7 @@ export default async function ManageSubscriptionPage() {
             )}
           </CardBody>
         </Card>
+        */}
 
         <p className="text-[11px] text-[var(--color-text-subtle)]">
           Questions about your subscription? Email support.
