@@ -1,8 +1,21 @@
-# DWN Lead Engine
+# Lead Engine
 
-Internal lead-generation CRM for **Design with Nihar** — discovers relevant businesses, audits their public websites, ranks fit for DWN's services, prepares personalized outreach drafts, and tracks the sales pipeline.
+**Find businesses that need what you sell, qualify them with evidence, and send outreach you'd actually want to receive — in one tool, without becoming a spammer.**
 
-> **Status:** Phase 8 (complete). All eight phases are shipped: shell, D1 CRUD + auth, CSV + campaigns, website audit + SSRF guard, deterministic scoring, discovery adapters (manual / CSV / Google Places), AI-assisted drafts with template fallback, rate limiting, and city/source/niche/score/campaign reports. See [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md).
+- **Live app:** [dwn-lead-engine.designwithnihar.workers.dev](https://dwn-lead-engine.designwithnihar.workers.dev)
+- **Pricing:** [/pricing](/pricing)
+- **Terms of Service:** [/legal/terms](/legal/terms)
+- **Privacy Policy:** [/legal/privacy](/legal/privacy)
+
+---
+
+## Development
+
+> The section below is for developers working on the codebase.
+
+**DWN Lead Engine** — internal lead-generation CRM for **Design with Nihar** — discovers relevant businesses, audits their public websites, ranks fit for DWN's services, prepares personalized outreach drafts, and tracks the sales pipeline.
+
+> **Status:** Phase H (launch prep). Phases A–H are shipped locally. See [`PRODUCT_BUILD_PLAN.md`](./PRODUCT_BUILD_PLAN.md) for the SaaS productization roadmap.
 
 ---
 

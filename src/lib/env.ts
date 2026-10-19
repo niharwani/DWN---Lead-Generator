@@ -40,6 +40,8 @@ const EXPOSED_KEYS = [
   "OUTLOOK_CLIENT_ID",
   "OUTLOOK_CLIENT_SECRET",
   "OUTLOOK_REDIRECT_URI",
+  // Phase H — super-admin gate
+  "SUPER_ADMIN_EMAILS",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

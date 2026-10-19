@@ -2843,3 +2843,63 @@ export async function insertCalcomLinkIntoDraftAction(
 
   revalidateAll(draft.leadId);
 }
+
+/* =================================================================
+ * Phase H — Admin-only server actions
+ *
+ * Each action starts with requireSuperAdmin(). These actions are
+ * intentionally separate from the tenant-scoped actions above.
+ * ================================================================= */
+
+import { requireSuperAdmin } from "@/lib/auth/admin";
+import { updateWorkspace } from "@/lib/db/repos/workspaces";
+
+/**
+ * Comp a workspace's plan — manually upgrades or downgrades a workspace
+ * without going through the billing flow. Used for comps, beta users,
+ * and support escalations.
+ */
+export async function adminCompPlanAction(formData: FormData): Promise<void> {
+  await requireSuperAdmin();
+  const db = await getDb();
+
+  const workspaceId = formData.get("workspaceId");
+  const plan = formData.get("plan");
+
+  if (!workspaceId || typeof workspaceId !== "string") {
+    throw new Error("workspaceId required.");
+  }
+  const allowedPlans = ["free", "freelancer", "teams", "studio"] as const;
+  type AllowedPlan = (typeof allowedPlans)[number];
+  if (!plan || !allowedPlans.includes(plan as AllowedPlan)) {
+    throw new Error("plan must be one of: free, freelancer, teams, studio.");
+  }
+
+  await updateWorkspace(db, workspaceId, { plan: plan as AllowedPlan });
+  revalidatePath(`/admin/workspaces/${workspaceId}`);
+}
+
+/**
+ * Set view-only impersonation flag on the current admin session.
+ * This is a URL-state toggle, not a real session impersonation.
+ * Included here for future extension (e.g. persisting impersonation state
+ * to the session row for audit trail).
+ */
+export async function adminStartImpersonationAction(
+  _workspaceId: string
+): Promise<void> {
+  await requireSuperAdmin();
+  // Impersonation is currently implemented as a URL query param (?impersonating=1).
+  // This server action exists as a stub for future audit-log integration.
+  // No state is mutated; the UI handles the redirect.
+}
+
+/**
+ * Clear any impersonation state. Stub for future session-level tracking.
+ */
+export async function adminStopImpersonationAction(
+  _workspaceId: string
+): Promise<void> {
+  await requireSuperAdmin();
+  // See note in adminStartImpersonationAction — URL-state only for now.
+}
