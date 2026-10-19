@@ -36,6 +36,9 @@ import {
   scoreLeadAction,
   toggleDoNotContactAction,
   assignLeadAction,
+  sendDraftViaGmailAction,
+  sendDraftViaOutlookAction,
+  insertCalcomLinkIntoDraftAction,
 } from "@/lib/actions";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
@@ -50,6 +53,7 @@ import {
 } from "@/lib/data";
 import { getDb } from "@/lib/db/client";
 import { listMembers } from "@/lib/db/repos/workspaces";
+import { getSetting } from "@/lib/db/repos/settings";
 import { profiles } from "@/lib/db/schema";
 import { inArray } from "drizzle-orm";
 import {
@@ -108,7 +112,14 @@ export default async function LeadDetailPage({
   // Phase F: workspace members for assignment dropdown
   const owner = await requirePageOwner();
   const db = await getDb();
-  const rawMembers = await listMembers(db, owner.id);
+  const [rawMembers, gmailTokensRaw, outlookTokensRaw] = await Promise.all([
+    listMembers(db, owner.id),
+    getSetting<{ accessToken?: string }>(db, owner.id, "gmail_tokens/v1"),
+    getSetting<{ accessToken?: string }>(db, owner.id, "outlook_tokens/v1"),
+  ]);
+  const gmailConnected = !!(gmailTokensRaw?.accessToken);
+  const outlookConnected = !!(outlookTokensRaw?.accessToken);
+
   const memberProfileIds = rawMembers.map((m) => m.profileId);
   const memberProfiles =
     memberProfileIds.length > 0
@@ -271,6 +282,8 @@ export default async function LeadDetailPage({
             drafts={drafts}
             leadId={lead.id}
             doNotContact={lead.doNotContact.flagged}
+            gmailConnected={gmailConnected}
+            outlookConnected={outlookConnected}
           />
           <ActivityTimelineSection activities={activities} />
         </div>
@@ -923,10 +936,14 @@ function OutreachDraftsSection({
   drafts,
   leadId,
   doNotContact,
+  gmailConnected,
+  outlookConnected,
 }: {
   drafts: import("@/lib/demo/types").OutreachDraft[];
   leadId: string;
   doNotContact: boolean;
+  gmailConnected: boolean;
+  outlookConnected: boolean;
 }) {
   return (
     <Card>
@@ -1043,25 +1060,85 @@ function OutreachDraftsSection({
                 ) : null}
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {d.status === "needs_review" ? (
-                    <ActionButton
-                      action={approveDraftAction}
-                      hiddenFields={{ draftId: d.id }}
-                      variant="primary"
-                      size="sm"
-                    >
-                      Approve
-                    </ActionButton>
+                    <>
+                      <ActionButton
+                        action={approveDraftAction}
+                        hiddenFields={{ draftId: d.id }}
+                        variant="primary"
+                        size="sm"
+                      >
+                        Approve
+                      </ActionButton>
+                      {/* Insert Cal.com booking link — only on needs_review drafts */}
+                      <ActionButton
+                        action={insertCalcomLinkIntoDraftAction}
+                        hiddenFields={{ draftId: d.id }}
+                        variant="secondary"
+                        size="sm"
+                        title="Append your Cal.com booking link to this draft. Configure your link in Settings → Integrations first."
+                      >
+                        Insert booking link
+                      </ActionButton>
+                    </>
                   ) : null}
                   {d.status === "approved" ? (
-                    <ActionButton
-                      action={markContactedAction}
-                      hiddenFields={{ draftId: d.id }}
-                      variant="primary"
-                      size="sm"
-                    >
-                      <Send aria-hidden className="h-3 w-3" />
-                      Mark contacted
-                    </ActionButton>
+                    <>
+                      <ActionButton
+                        action={markContactedAction}
+                        hiddenFields={{ draftId: d.id }}
+                        variant="primary"
+                        size="sm"
+                      >
+                        <Send aria-hidden className="h-3 w-3" />
+                        Mark contacted
+                      </ActionButton>
+                      {/* Send via Gmail — only for email channel, only when connected */}
+                      {d.channel === "email" && gmailConnected ? (
+                        <ActionButton
+                          action={sendDraftViaGmailAction}
+                          hiddenFields={{ draftId: d.id }}
+                          variant="secondary"
+                          size="sm"
+                          title="Send this draft via your connected Gmail account."
+                        >
+                          <Mail aria-hidden className="h-3 w-3" />
+                          Send via Gmail
+                        </ActionButton>
+                      ) : d.channel === "email" && !gmailConnected ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled
+                          title="Connect Gmail in Settings → Integrations to enable this."
+                        >
+                          <Mail aria-hidden className="h-3 w-3" />
+                          Send via Gmail
+                        </Button>
+                      ) : null}
+                      {/* Send via Outlook — only for email channel, only when connected */}
+                      {d.channel === "email" && outlookConnected ? (
+                        <ActionButton
+                          action={sendDraftViaOutlookAction}
+                          hiddenFields={{ draftId: d.id }}
+                          variant="secondary"
+                          size="sm"
+                          title="Send this draft via your connected Outlook account."
+                        >
+                          <Mail aria-hidden className="h-3 w-3" />
+                          Send via Outlook
+                        </ActionButton>
+                      ) : d.channel === "email" && !outlookConnected ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled
+                          title="Connect Outlook in Settings → Integrations to enable this."
+                        >
+                          <Mail aria-hidden className="h-3 w-3" />
+                          Send via Outlook
+                        </Button>
+                      ) : null}
+                    </>
                   ) : null}
                   {d.status === "contacted" ? (
                     <form action={logReplyAction} className="flex flex-wrap items-center gap-1.5">

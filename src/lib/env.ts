@@ -36,6 +36,10 @@ const EXPOSED_KEYS = [
   "RAZORPAY_PLAN_ID_TEAMS_MONTHLY",
   "RAZORPAY_PLAN_ID_TEAMS_ANNUAL",
   "BILLING_RETURN_URL",
+  // Phase G additions — Outlook (Microsoft Graph)
+  "OUTLOOK_CLIENT_ID",
+  "OUTLOOK_CLIENT_SECRET",
+  "OUTLOOK_REDIRECT_URI",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

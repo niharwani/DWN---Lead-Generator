@@ -102,8 +102,13 @@ export async function runReplyTriageSweep(
 
   for (const reply of replies) {
     try {
-      // Match reply to draft by threadId
+      // Match reply to draft by threadId.
+      // Phase G: first check the gmail_thread_id column (set by sendDraftViaGmailAction).
+      // Fall back to searching personalizationEvidence strings for backwards compat
+      // with drafts sent before the column was populated.
       const matchingDraft = draftRows.find((d) => {
+        const colThreadId = (d as Record<string, unknown>)["gmailThreadId"] as string | undefined;
+        if (colThreadId && colThreadId === reply.threadId) return true;
         const evidence = (d.personalizationEvidence as string[]) ?? [];
         return evidence.some((e) => e.includes(reply.threadId));
       });

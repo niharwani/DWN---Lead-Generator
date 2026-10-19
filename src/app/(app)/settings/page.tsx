@@ -3,12 +3,8 @@ import {
   Building2,
   Package,
   SlidersHorizontal,
-  Plug,
-  Sparkles,
   Globe,
   AlertTriangle,
-  CheckCircle2,
-  KeyRound,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +36,9 @@ import { BillingSection } from "./_sections/billing";
 import { MembersSection } from "./_sections/members";
 import { AuditLogSection } from "./_sections/audit-log";
 import { WebhooksSection } from "./_sections/webhooks";
+import { IntegrationsSection } from "./_sections/integrations";
+import { getCalendarConfig } from "@/lib/calendar/calcom";
+import { getNotificationPrefs } from "@/lib/db/repos/notification-prefs";
 import type { DraftTemplateData } from "@/lib/actions";
 import type { MemberRow, PendingInvite } from "./_sections/members";
 
@@ -54,7 +53,7 @@ export default async function SettingsPage() {
   // Phase C data
   const owner = await requirePageOwner();
   const db = await getDb();
-  const [customFactors, customSignals, profile, templatesRaw, workspace, usage, billingState, env] = await Promise.all([
+  const [customFactors, customSignals, profile, templatesRaw, workspace, usage, billingState, env, calcomConfig, notifPrefs, gmailTokensRaw, outlookTokensRaw] = await Promise.all([
     listFactors(db, owner.id),
     listSignals(db, owner.id),
     getProfileSettings(db, owner.id),
@@ -63,7 +62,14 @@ export default async function SettingsPage() {
     getCurrentPeriodUsage(db, owner.id),
     getSetting<{ paymentFailed?: boolean }>(db, owner.id, "billing_state/v1"),
     getRuntimeEnv(),
+    getCalendarConfig(db, owner.id),
+    getNotificationPrefs(db, owner.id).catch(() => null),
+    getSetting<{ accessToken?: string; connectedAt?: string; email?: string }>(db, owner.id, "gmail_tokens/v1"),
+    getSetting<{ accessToken?: string; connectedAt?: string; email?: string }>(db, owner.id, "outlook_tokens/v1"),
   ]);
+
+  const gmailConnected = !!(gmailTokensRaw?.accessToken);
+  const outlookConnected = !!(outlookTokensRaw?.accessToken);
 
   // Phase E — Next upgradeable plan's Razorpay plan ID (monthly as default)
   const currentPlan = owner.workspace.plan as PlanId;
@@ -297,56 +303,18 @@ export default async function SettingsPage() {
         {/* --- Custom audit signals (Phase C) --------------------------- */}
         <CustomSignalsSection initialSignals={customSignals} />
 
-        {/* --- Integrations --------------------------------------------- */}
-        <SettingsSection
-          icon={<Plug aria-hidden className="h-4 w-4" />}
-          title="Source integrations"
-          description="Secrets are stored server-side. Only configured / missing status is shown here, never the key itself."
-        >
-          <ul className="divide-y divide-[var(--color-border)]">
-            <IntegrationRow
-              name="Google Places API"
-              envKey="GOOGLE_PLACES_API_KEY"
-              status="missing"
-              description="Server-side discovery adapter. Field-masked, quota-aware."
-            />
-            <IntegrationRow
-              name="PageSpeed Insights API"
-              envKey="PAGESPEED_API_KEY"
-              status="missing"
-              description="Optional enhancement to the website audit."
-            />
-          </ul>
-        </SettingsSection>
-
-        {/* --- AI provider --------------------------------------------- */}
-        <SettingsSection
-          icon={<Sparkles aria-hidden className="h-4 w-4" />}
-          title="AI provider"
-          description="Optional. The app runs usefully without an AI key — opportunity briefs and drafts fall back to deterministic templates."
-        >
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Provider">
-              <select
-                className="h-8 w-full rounded-sm border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 text-sm"
-                defaultValue="none"
-              >
-                <option value="none">Templates only (no provider)</option>
-                <option value="anthropic">Anthropic Claude</option>
-              </select>
-            </Field>
-            <Field label="Model" hint="Suggested: claude-sonnet-4-6">
-              <Input placeholder="claude-sonnet-4-6" />
-            </Field>
-          </div>
-          <IntegrationRow
-            name="Anthropic API key"
-            envKey="ANTHROPIC_API_KEY"
-            status="missing"
-            description="Server-side only."
-            inline
-          />
-        </SettingsSection>
+        {/* --- Integrations (Phase G) ------------------------------------ */}
+        <IntegrationsSection
+          gmailConnected={gmailConnected}
+          gmailEmail={gmailTokensRaw?.email}
+          outlookConnected={outlookConnected}
+          outlookEmail={outlookTokensRaw?.email}
+          googlePlacesConfigured={!!env.GOOGLE_PLACES_API_KEY}
+          pageSpeedConfigured={!!env.PAGESPEED_API_KEY}
+          anthropicConfigured={!!env.ANTHROPIC_API_KEY}
+          calcomConfig={calcomConfig ?? null}
+          slackWebhookUrl={notifPrefs?.slackWebhookUrl ?? undefined}
+        />
 
         {/* --- Audit settings ------------------------------------------- */}
         <SettingsSection
@@ -440,69 +408,3 @@ function SettingsSection({
   );
 }
 
-function IntegrationRow({
-  name,
-  envKey,
-  status,
-  description,
-  inline,
-}: {
-  name: string;
-  envKey: string;
-  status: "configured" | "missing";
-  description: string;
-  inline?: boolean;
-}) {
-  const content = (
-    <>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <KeyRound
-            aria-hidden
-            className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-subtle)]"
-          />
-          <span className="text-sm text-[var(--color-text)]">{name}</span>
-          {status === "configured" ? (
-            <Badge variant="success">
-              <CheckCircle2 aria-hidden className="h-3 w-3" />
-              Configured
-            </Badge>
-          ) : (
-            <Badge variant="warning">
-              <AlertTriangle aria-hidden className="h-3 w-3" />
-              Not configured
-            </Badge>
-          )}
-        </div>
-        <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-          {description}
-        </p>
-        <p className="mt-0.5 text-[11px] text-[var(--color-text-subtle)]">
-          env:{" "}
-          <code className="rounded bg-[var(--color-neutral-100)] px-1 py-0.5">
-            {envKey}
-          </code>
-          {" — set with "}
-          <code className="rounded bg-[var(--color-neutral-100)] px-1 py-0.5">
-            wrangler secret put {envKey}
-          </code>
-        </p>
-      </div>
-      <div className="shrink-0">
-        <Button variant="ghost" size="sm">
-          Instructions
-        </Button>
-      </div>
-    </>
-  );
-  if (inline) {
-    return (
-      <div className="mt-4 flex items-start justify-between gap-3 rounded-sm border border-[var(--color-border)] bg-[var(--color-neutral-50)] p-3">
-        {content}
-      </div>
-    );
-  }
-  return (
-    <li className="flex items-start justify-between gap-3 py-3">{content}</li>
-  );
-}

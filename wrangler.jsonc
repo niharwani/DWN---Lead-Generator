@@ -57,7 +57,9 @@
       // Phase D — every 5min: webhook retry queue drain
       "*/5 * * * *",
       // Phase D — daily 02:15 UTC: snooze/wake sweep
-      "15 2 * * *"
+      "15 2 * * *",
+      // Phase G — every 15min: Outlook reply sweep
+      "*/15 * * * *"
     ]
   }
   // Future bindings (uncomment when the phase that uses them lands):

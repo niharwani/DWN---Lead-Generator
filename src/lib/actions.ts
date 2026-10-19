@@ -2538,3 +2538,308 @@ export async function assignTaskAction(
 
   revalidateAll();
 }
+
+/* -----------------------------------------------------------------
+ * Phase G — Gmail send action
+ * -----------------------------------------------------------------
+ * Sends an approved email draft via the owner's connected Gmail account.
+ * Persists the Gmail messageId/threadId onto the draft row and transitions
+ * the draft to `contacted`.
+ */
+
+import { sendMessage as gmailSendMessage } from "@/lib/gmail/client";
+import type { GmailTokens } from "@/lib/gmail/client";
+
+export async function sendDraftViaGmailAction(formDataOrId: FormData | string): Promise<void> {
+  const draftId = typeof formDataOrId === "string"
+    ? formDataOrId
+    : String(formDataOrId.get("draftId") ?? "").trim();
+  if (!draftId) throw new Error("draftId is required.");
+
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const env = await getRuntimeEnv();
+
+  // Load tokens
+  const tokensRaw = await getSetting<Partial<GmailTokens>>(
+    db,
+    owner.id,
+    "gmail_tokens/v1"
+  );
+  if (
+    !tokensRaw?.accessToken ||
+    !tokensRaw.refreshToken ||
+    !tokensRaw.expiresAt
+  ) {
+    throw new Error(
+      "Gmail is not connected. Go to Settings → Integrations and connect your Gmail account first."
+    );
+  }
+  const tokens = tokensRaw as GmailTokens;
+
+  // Load draft
+  const draft = await getDraft(db, owner.id, draftId);
+  if (!draft) throw new Error("Draft not found.");
+  if (draft.status !== "approved") {
+    throw new Error("Only approved drafts can be sent via Gmail.");
+  }
+  if (draft.channel !== "email") {
+    throw new Error("Gmail send is only available for email channel drafts.");
+  }
+  if (!draft.subject) {
+    throw new Error("Draft is missing a subject line.");
+  }
+
+  // Load lead
+  const lead = await getLead(db, owner.id, draft.leadId);
+  if (!lead) throw new Error("Lead not found.");
+  if (!lead.publicEmail) {
+    throw new Error(
+      "This lead has no public email address. Add one before sending."
+    );
+  }
+  if (lead.doNotContact.flagged) {
+    throw new Error("This lead is marked do-not-contact. Send is blocked.");
+  }
+
+  // Send
+  const result = await gmailSendMessage({
+    to: lead.publicEmail,
+    from: owner.email,
+    subject: draft.subject,
+    body: draft.body,
+    tokens,
+    env,
+  });
+
+  // Persist rotated tokens
+  await setSetting(db, owner.id, "gmail_tokens/v1", {
+    accessToken: result.tokens.accessToken,
+    refreshToken: result.tokens.refreshToken,
+    expiresAt: result.tokens.expiresAt,
+  });
+
+  const now = new Date().toISOString();
+
+  // Write gmailThreadId + gmailMessageId via raw SQL (Phase A migration columns
+  // not reflected in the Drizzle schema definition)
+  const { sql: rawSql } = await import("drizzle-orm");
+  await db.run(
+    rawSql`UPDATE outreach_drafts SET gmail_thread_id = ${result.threadId}, gmail_message_id = ${result.messageId}, updated_at = ${now} WHERE owner_id = ${owner.id} AND id = ${draftId}`
+  );
+
+  // Transition draft to contacted + side effects
+  await transitionDraft(db, owner.id, draftId, "contacted");
+
+  await updateLead(db, owner.id, lead.id, {
+    lastContactedAt: now,
+    pipelineStage: "contacted",
+  });
+
+  await createActivity(db, owner.id, {
+    leadId: lead.id,
+    activityType: "contact_logged",
+    title: `Sent via Gmail to ${lead.businessName}`,
+    description: draft.subject,
+    metadata: {
+      gmailMessageId: result.messageId,
+      gmailThreadId: result.threadId,
+      draftId,
+    },
+  });
+
+  revalidateAll(lead.id);
+}
+
+/* -----------------------------------------------------------------
+ * Phase G — Outlook send action
+ * -----------------------------------------------------------------
+ * Mirrors sendDraftViaGmailAction but uses the Outlook (Graph) client.
+ * Stores the Outlook conversationId in the same gmail_thread_id column.
+ */
+
+import { sendMessage as outlookSendMessage } from "@/lib/outlook/client";
+import type { OutlookTokens } from "@/lib/outlook/client";
+
+export async function sendDraftViaOutlookAction(formDataOrId: FormData | string): Promise<void> {
+  const draftId = typeof formDataOrId === "string"
+    ? formDataOrId
+    : String(formDataOrId.get("draftId") ?? "").trim();
+  if (!draftId) throw new Error("draftId is required.");
+
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const env = await getRuntimeEnv();
+
+  // Load tokens
+  const tokensRaw = await getSetting<Partial<OutlookTokens>>(
+    db,
+    owner.id,
+    "outlook_tokens/v1"
+  );
+  if (
+    !tokensRaw?.accessToken ||
+    !tokensRaw.refreshToken ||
+    !tokensRaw.expiresAt
+  ) {
+    throw new Error(
+      "Outlook is not connected. Go to Settings → Integrations and connect your Outlook account first."
+    );
+  }
+  const tokens = tokensRaw as OutlookTokens;
+
+  // Load draft
+  const draft = await getDraft(db, owner.id, draftId);
+  if (!draft) throw new Error("Draft not found.");
+  if (draft.status !== "approved") {
+    throw new Error("Only approved drafts can be sent via Outlook.");
+  }
+  if (draft.channel !== "email") {
+    throw new Error("Outlook send is only available for email channel drafts.");
+  }
+  if (!draft.subject) {
+    throw new Error("Draft is missing a subject line.");
+  }
+
+  // Load lead
+  const lead = await getLead(db, owner.id, draft.leadId);
+  if (!lead) throw new Error("Lead not found.");
+  if (!lead.publicEmail) {
+    throw new Error(
+      "This lead has no public email address. Add one before sending."
+    );
+  }
+  if (lead.doNotContact.flagged) {
+    throw new Error("This lead is marked do-not-contact. Send is blocked.");
+  }
+
+  // Send
+  const result = await outlookSendMessage({
+    to: lead.publicEmail,
+    from: owner.email,
+    subject: draft.subject,
+    body: draft.body,
+    tokens,
+    env,
+  });
+
+  // Persist rotated tokens
+  await setSetting(db, owner.id, "outlook_tokens/v1", {
+    accessToken: result.tokens.accessToken,
+    refreshToken: result.tokens.refreshToken,
+    expiresAt: result.tokens.expiresAt,
+  });
+
+  const now = new Date().toISOString();
+
+  // Write thread/message IDs via raw SQL
+  const { sql: rawSql } = await import("drizzle-orm");
+  await db.run(
+    rawSql`UPDATE outreach_drafts SET gmail_thread_id = ${result.threadId}, gmail_message_id = ${result.messageId}, updated_at = ${now} WHERE owner_id = ${owner.id} AND id = ${draftId}`
+  );
+
+  // Transition draft to contacted + side effects
+  await transitionDraft(db, owner.id, draftId, "contacted");
+
+  await updateLead(db, owner.id, lead.id, {
+    lastContactedAt: now,
+    pipelineStage: "contacted",
+  });
+
+  await createActivity(db, owner.id, {
+    leadId: lead.id,
+    activityType: "contact_logged",
+    title: `Sent via Outlook to ${lead.businessName}`,
+    description: draft.subject,
+    metadata: {
+      outlookMessageId: result.messageId,
+      outlookConversationId: result.threadId,
+      draftId,
+    },
+  });
+
+  revalidateAll(lead.id);
+}
+
+/* -----------------------------------------------------------------
+ * Phase G — Cal.com link actions
+ * ----------------------------------------------------------------- */
+
+import {
+  getCalendarConfig,
+  setCalendarConfig,
+} from "@/lib/calendar/calcom";
+import { buildBookingLinkSnippet } from "@/lib/calendar/calcom";
+import type { CalendarConfig } from "@/lib/calendar/calcom";
+
+const calcomSchema = z.object({
+  calcomUrl: z.string().trim().url().max(500),
+  defaultDuration: z
+    .string()
+    .regex(/^\d+$/)
+    .transform(Number)
+    .refine((n) => n >= 5 && n <= 480, "Duration must be 5–480 minutes")
+    .optional(),
+});
+
+export async function setCalcomLinkAction(
+  formData: FormData
+): Promise<CalendarConfig> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, calcomSchema);
+  const config = await setCalendarConfig(db, owner.id, {
+    calcomUrl: input.calcomUrl,
+    defaultDuration: input.defaultDuration ?? 30,
+  });
+  revalidatePath("/settings");
+  return config;
+}
+
+/**
+ * Appends the Cal.com booking link to a draft body.
+ * Draft must be in `needs_review` status (approved drafts are immutable).
+ * Returns the draft to `needs_review` so the human re-approves it.
+ */
+export async function insertCalcomLinkIntoDraftAction(
+  formDataOrId: FormData | string
+): Promise<void> {
+  const draftId = typeof formDataOrId === "string"
+    ? formDataOrId
+    : String(formDataOrId.get("draftId") ?? "").trim();
+  if (!draftId) throw new Error("draftId is required.");
+
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const draft = await getDraft(db, owner.id, draftId);
+  if (!draft) throw new Error("Draft not found.");
+  if (draft.status !== "needs_review") {
+    throw new Error(
+      "The Cal.com link can only be inserted into drafts that are awaiting review."
+    );
+  }
+
+  const calConfig = await getCalendarConfig(db, owner.id);
+  if (!calConfig) {
+    throw new Error(
+      "No Cal.com link configured. Add one in Settings → Integrations first."
+    );
+  }
+
+  const snippet = buildBookingLinkSnippet(calConfig);
+  const newBody = draft.body + snippet;
+
+  const { updateDraftBody } = await import("@/lib/db/repos/drafts");
+  await updateDraftBody(db, owner.id, draftId, { body: newBody });
+
+  await createActivity(db, owner.id, {
+    leadId: draft.leadId,
+    activityType: "draft_created",
+    title: "Cal.com booking link inserted into draft",
+    description: `Link: ${calConfig.calcomUrl}`,
+    metadata: { draftId, calcomUrl: calConfig.calcomUrl },
+  });
+
+  revalidateAll(draft.leadId);
+}
