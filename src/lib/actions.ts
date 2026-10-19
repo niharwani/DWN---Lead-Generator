@@ -2058,7 +2058,7 @@ export async function enableAutoDecayAction(days: number): Promise<void> {
 }
 
 /* -----------------------------------------------------------------
- * Phase E — Billing actions (APPEND ONLY — do not modify above)
+ * Phase E — Billing actions (Razorpay swap, APPEND ONLY — do not modify above)
  * -----------------------------------------------------------------
  * These actions wrap the billing API routes and are used by the
  * billing section UI. The actual limit enforcement (checkLimit /
@@ -2067,21 +2067,15 @@ export async function enableAutoDecayAction(days: number): Promise<void> {
  */
 
 /**
- * Redirect the user to a Stripe Checkout session for the given priceId.
+ * Redirect the user to the Razorpay Subscription short_url for the given planId.
  * Typically called from the BillingSection or billing page.
  */
 export async function startCheckoutAction(formData: FormData): Promise<void> {
   const owner = await requirePageOwner();
-  const priceId = formData.get("priceId");
-  if (!priceId || typeof priceId !== "string") {
-    throw new Error("priceId is required");
+  const planId = formData.get("planId");
+  if (!planId || typeof planId !== "string") {
+    throw new Error("planId is required");
   }
-
-  const env = await getRuntimeEnv();
-  const baseUrl = env.APP_BASE_URL ?? "http://localhost:3000";
-
-  const { createCheckoutSession } = await import("@/lib/billing/stripe");
-  const { assertWithinRateLimit, RateLimitError } = await import("@/lib/rate-limit");
 
   try {
     assertWithinRateLimit(owner.id, "billing_checkout");
@@ -2092,101 +2086,172 @@ export async function startCheckoutAction(formData: FormData): Promise<void> {
     throw err;
   }
 
-  const session = await createCheckoutSession({
-    workspaceId: owner.id,
-    priceId,
-    successUrl: `${baseUrl}/billing?checkout=success`,
-    cancelUrl: `${baseUrl}/billing?checkout=cancelled`,
-  });
+  const env = await getRuntimeEnv();
 
-  if (!session.url) {
-    throw new Error("Stripe did not return a checkout URL.");
+  // Determine totalCount: annual plans ~10 cycles, monthly ~120
+  const isAnnualPlan =
+    planId === env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL ||
+    planId === env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL;
+  const totalCount = isAnnualPlan ? 10 : 120;
+
+  const { createSubscription, createCustomer } = await import("@/lib/billing/razorpay");
+  const { getWorkspace, updateRazorpayFields } = await import("@/lib/db/repos/workspaces");
+  const db = await getDb();
+  let workspace = await getWorkspace(db, owner.id);
+
+  // Ensure workspace has a Razorpay customer ID
+  let razorpayCustomerId = workspace?.razorpayCustomerId ?? null;
+  if (!razorpayCustomerId) {
+    const customer = await createCustomer({
+      name: workspace?.name ?? owner.email,
+      email: owner.email,
+    });
+    razorpayCustomerId = customer.id;
+    workspace = await updateRazorpayFields(db, owner.id, {
+      customerId: razorpayCustomerId,
+    });
   }
 
-  redirect(session.url);
+  const subscription = await createSubscription({
+    planId,
+    workspaceId: owner.id,
+    totalCount,
+    notes: { workspace_id: owner.id },
+  });
+
+  await updateRazorpayFields(db, owner.id, {
+    subscriptionId: subscription.id,
+  });
+
+  redirect(subscription.short_url);
 }
 
 /**
- * Redirect the user to the Stripe Customer Portal for their workspace.
- * The workspace must already have a Stripe customer ID.
+ * Redirect the user to the /billing/manage page.
+ * Razorpay has no hosted customer portal — use the in-app manage page instead.
  */
 export async function openBillingPortalAction(): Promise<void> {
-  const owner = await requirePageOwner();
-  const db = await getDb();
-
-  const { getWorkspace } = await import("@/lib/db/repos/workspaces");
-  const workspace = await getWorkspace(db, owner.id);
-  const customerId = workspace?.stripeCustomerId;
-
-  if (!customerId) {
-    throw new Error(
-      "No Stripe customer found for this workspace. Complete a checkout first."
-    );
-  }
-
-  const env = await getRuntimeEnv();
-  const baseUrl = env.BILLING_RETURN_URL ?? env.APP_BASE_URL ?? "http://localhost:3000";
-
-  const { createPortalSession } = await import("@/lib/billing/stripe");
-  const session = await createPortalSession({
-    customerId,
-    returnUrl: `${baseUrl}/settings#billing`,
-  });
-
-  redirect(session.url);
+  redirect("/billing/manage");
 }
 
 /**
- * Admin-only: re-fetch the workspace's Stripe subscription and sync the
- * plan + Stripe fields to the database. Useful for debugging webhook misses.
+ * Admin-only: re-fetch the workspace's Razorpay subscription and sync the
+ * plan + Razorpay fields to the database. Useful for debugging webhook misses.
  */
 export async function syncBillingStateAction(): Promise<void> {
   const owner = await requirePageOwner();
   const db = await getDb();
 
-  const { getWorkspace, updateStripeFields } = await import("@/lib/db/repos/workspaces");
+  const { getWorkspace, updateRazorpayFields } = await import("@/lib/db/repos/workspaces");
   const workspace = await getWorkspace(db, owner.id);
 
-  if (!workspace?.stripeSubscriptionId) {
-    throw new Error("No Stripe subscription ID on this workspace.");
+  if (!workspace?.razorpaySubscriptionId) {
+    throw new Error("No Razorpay subscription ID on this workspace.");
   }
 
-  const { getSubscription } = await import("@/lib/billing/stripe");
+  const { getSubscription } = await import("@/lib/billing/razorpay");
   const { getRuntimeEnv: getEnv } = await import("@/lib/env");
   const env = await getEnv();
 
-  const sub = await getSubscription(workspace.stripeSubscriptionId);
+  const sub = await getSubscription(workspace.razorpaySubscriptionId);
 
-  // Derive plan from the subscription's price ID
-  const priceId = sub.items?.data?.[0]?.price?.id;
+  // Derive plan from the subscription's plan_id
+  const planId = sub.plan_id;
   let plan: "free" | "freelancer" | "teams" | "studio" = "free";
-  if (priceId) {
+  if (planId) {
     if (
-      priceId === env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ||
-      priceId === env.STRIPE_PRICE_ID_FREELANCER_ANNUAL
+      planId === env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ||
+      planId === env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL
     ) {
       plan = "freelancer";
     } else if (
-      priceId === env.STRIPE_PRICE_ID_TEAMS_MONTHLY ||
-      priceId === env.STRIPE_PRICE_ID_TEAMS_ANNUAL
+      planId === env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ||
+      planId === env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL
     ) {
       plan = "teams";
     }
   }
 
-  const trialEndsAt = sub.trial_end
-    ? new Date(sub.trial_end * 1000).toISOString()
-    : null;
-
-  await updateStripeFields(db, owner.id, {
+  await updateRazorpayFields(db, owner.id, {
     plan,
-    trialEndsAt,
-    customerId: sub.customer,
+    customerId: sub.customer_id ?? undefined,
     subscriptionId: sub.id,
   });
 
   revalidatePath("/settings");
   revalidatePath("/billing");
+}
+
+/**
+ * Cancel the workspace's Razorpay subscription.
+ * @param cancelAtCycleEnd - true = cancel at end of billing cycle (default); false = immediate
+ */
+export async function cancelSubscriptionAction(cancelAtCycleEnd = true): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const { getWorkspace, updateRazorpayFields } = await import("@/lib/db/repos/workspaces");
+  const workspace = await getWorkspace(db, owner.id);
+
+  if (!workspace?.razorpaySubscriptionId) {
+    throw new Error("No active Razorpay subscription found for this workspace.");
+  }
+
+  const { cancelSubscription } = await import("@/lib/billing/razorpay");
+  await cancelSubscription(workspace.razorpaySubscriptionId, cancelAtCycleEnd);
+
+  if (!cancelAtCycleEnd) {
+    // Immediate cancel — update plan to free right away
+    await updateRazorpayFields(db, owner.id, {
+      plan: "free",
+      subscriptionId: undefined,
+    });
+  }
+  // If cancelAtCycleEnd, webhook subscription.cancelled will downgrade when it fires.
+
+  revalidatePath("/settings");
+  revalidatePath("/billing");
+  revalidatePath("/billing/manage");
+}
+
+/**
+ * Pause the workspace's Razorpay subscription.
+ */
+export async function pauseSubscriptionAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const { getWorkspace } = await import("@/lib/db/repos/workspaces");
+  const workspace = await getWorkspace(db, owner.id);
+
+  if (!workspace?.razorpaySubscriptionId) {
+    throw new Error("No active Razorpay subscription found for this workspace.");
+  }
+
+  const { pauseSubscription } = await import("@/lib/billing/razorpay");
+  await pauseSubscription(workspace.razorpaySubscriptionId);
+
+  revalidatePath("/billing/manage");
+}
+
+/**
+ * Resume a paused Razorpay subscription.
+ */
+export async function resumeSubscriptionAction(): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+
+  const { getWorkspace } = await import("@/lib/db/repos/workspaces");
+  const workspace = await getWorkspace(db, owner.id);
+
+  if (!workspace?.razorpaySubscriptionId) {
+    throw new Error("No Razorpay subscription found for this workspace.");
+  }
+
+  const { resumeSubscription } = await import("@/lib/billing/razorpay");
+  await resumeSubscription(workspace.razorpaySubscriptionId);
+
+  revalidatePath("/billing/manage");
 }
 
 /* -----------------------------------------------------------------

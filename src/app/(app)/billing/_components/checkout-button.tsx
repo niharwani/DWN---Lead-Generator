@@ -2,7 +2,8 @@
 
 /**
  * Client component for the "Choose plan" button on the billing page.
- * Calls startCheckoutAction and redirects to the Stripe Checkout URL.
+ * Calls the /api/billing/checkout endpoint with the Razorpay plan ID
+ * and redirects to the subscription short_url.
  */
 
 import { useState } from "react";
@@ -26,17 +27,21 @@ export function BillingCheckoutButton({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const priceId = isAnnual ? (annualPriceId ?? monthlyPriceId) : (monthlyPriceId ?? annualPriceId);
+  // monthlyPriceId / annualPriceId here hold Razorpay plan IDs (named for
+  // backwards-compat with the billing page component interface)
+  const razorpayPlanId = isAnnual
+    ? (annualPriceId ?? monthlyPriceId)
+    : (monthlyPriceId ?? annualPriceId);
 
   async function handleCheckout() {
-    if (!priceId) return;
+    if (!razorpayPlanId) return;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ priceId }),
+        body: JSON.stringify({ planId: razorpayPlanId }),
       });
       const data = (await res.json()) as { url?: string; error?: { message: string } };
       if (!res.ok || !data.url) {
@@ -78,7 +83,7 @@ export function BillingCheckoutButton({
         variant="primary"
         size="sm"
         className="w-full"
-        disabled={loading || !priceId}
+        disabled={loading || !razorpayPlanId}
         onClick={handleCheckout}
       >
         {loading ? "Redirecting…" : `Choose ${planName}`}

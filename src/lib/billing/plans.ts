@@ -1,7 +1,7 @@
 /**
  * Billing plan definitions — single source of truth for Phase E.
  *
- * ALL numeric quota values and ALL Stripe price IDs are intentionally null.
+ * ALL numeric quota values and ALL Razorpay plan IDs are intentionally null.
  * Fill them in before launch (Phase H pricing exercise).
  *
  * Feature-flag matrix follows PRODUCT_PLAN.md §2.4.
@@ -51,9 +51,9 @@ export type Plan = {
   // TODO: fill before launch
   priceAnnualUsd: number | null;
   // TODO: fill before launch
-  stripePriceIdMonthly: string | null;
+  razorpayPlanIdMonthly: string | null;
   // TODO: fill before launch
-  stripePriceIdAnnual: string | null;
+  razorpayPlanIdAnnual: string | null;
 };
 
 export const PLANS: Record<PlanId, Plan> = {
@@ -74,8 +74,8 @@ export const PLANS: Record<PlanId, Plan> = {
     maxSeats: 1,
     priceMonthlyUsd: null, // TODO: fill before launch
     priceAnnualUsd: null, // TODO: fill before launch
-    stripePriceIdMonthly: null, // TODO: fill before launch
-    stripePriceIdAnnual: null, // TODO: fill before launch
+    razorpayPlanIdMonthly: null, // TODO: fill before launch
+    razorpayPlanIdAnnual: null, // TODO: fill before launch
   },
 
   freelancer: {
@@ -99,8 +99,8 @@ export const PLANS: Record<PlanId, Plan> = {
     maxSeats: 1,
     priceMonthlyUsd: null, // TODO: fill before launch (spec: $29/mo)
     priceAnnualUsd: null, // TODO: fill before launch (spec: $23/mo billed annually)
-    stripePriceIdMonthly: null, // TODO: fill before launch
-    stripePriceIdAnnual: null, // TODO: fill before launch
+    razorpayPlanIdMonthly: null, // TODO: fill before launch
+    razorpayPlanIdAnnual: null, // TODO: fill before launch
   },
 
   teams: {
@@ -134,8 +134,8 @@ export const PLANS: Record<PlanId, Plan> = {
     maxSeats: null, // TODO: fill before launch (spec: 25)
     priceMonthlyUsd: null, // TODO: fill before launch (spec: $79/user/mo)
     priceAnnualUsd: null, // TODO: fill before launch (spec: $63/user/mo billed annually)
-    stripePriceIdMonthly: null, // TODO: fill before launch
-    stripePriceIdAnnual: null, // TODO: fill before launch
+    razorpayPlanIdMonthly: null, // TODO: fill before launch
+    razorpayPlanIdAnnual: null, // TODO: fill before launch
   },
 
   studio: {
@@ -171,8 +171,8 @@ export const PLANS: Record<PlanId, Plan> = {
     maxSeats: null, // unlimited (hand-sold)
     priceMonthlyUsd: null, // TODO: fill before launch (spec: $499+/mo, hand-sold)
     priceAnnualUsd: null, // TODO: fill before launch
-    stripePriceIdMonthly: null, // TODO: fill before launch
-    stripePriceIdAnnual: null, // TODO: fill before launch
+    razorpayPlanIdMonthly: null, // TODO: fill before launch
+    razorpayPlanIdAnnual: null, // TODO: fill before launch
   },
 };
 

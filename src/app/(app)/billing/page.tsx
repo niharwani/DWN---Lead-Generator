@@ -63,14 +63,14 @@ export default async function BillingPage() {
   const currentPlan = owner.workspace.plan;
   const env = await getRuntimeEnv();
 
-  // Map plan IDs to their Stripe price IDs (for checkout button)
-  const monthlyPriceIds: Partial<Record<PlanId, string>> = {
-    freelancer: env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ?? undefined,
-    teams: env.STRIPE_PRICE_ID_TEAMS_MONTHLY ?? undefined,
+  // Map plan IDs to their Razorpay plan IDs (for checkout button)
+  const monthlyPlanIds: Partial<Record<PlanId, string>> = {
+    freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ?? undefined,
+    teams: env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ?? undefined,
   };
-  const annualPriceIds: Partial<Record<PlanId, string>> = {
-    freelancer: env.STRIPE_PRICE_ID_FREELANCER_ANNUAL ?? undefined,
-    teams: env.STRIPE_PRICE_ID_TEAMS_ANNUAL ?? undefined,
+  const annualPlanIds: Partial<Record<PlanId, string>> = {
+    freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL ?? undefined,
+    teams: env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL ?? undefined,
   };
 
   return (
@@ -87,8 +87,8 @@ export default async function BillingPage() {
             const plan = PLANS[planId];
             const isCurrentPlan = planId === currentPlan;
             const isUpgrade = comparePlans(planId, currentPlan) > 0;
-            const monthlyPriceId = monthlyPriceIds[planId];
-            const annualPriceId = annualPriceIds[planId];
+            const monthlyPriceId = monthlyPlanIds[planId];
+            const annualPriceId = annualPlanIds[planId];
 
             return (
               <Card
@@ -276,9 +276,12 @@ export default async function BillingPage() {
         </Card>
 
         <p className="text-[11px] text-[var(--color-text-subtle)]">
-          Prices are in USD and subject to change. Annual billing saves approximately 20%.
-          Usage limits reset on the 1st of each UTC calendar month. Downgrade or cancel
-          any time via the Customer Portal. Questions? Email support.
+          Prices subject to change. Annual billing saves approximately 20%.
+          Usage limits reset on the 1st of each UTC calendar month. Manage or cancel
+          your subscription at any time via{" "}
+          <a href="/billing/manage" className="underline hover:no-underline">
+            Manage subscription
+          </a>. Questions? Email support.
         </p>
       </div>
     </>

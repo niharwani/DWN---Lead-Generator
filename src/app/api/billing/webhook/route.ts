@@ -1,31 +1,42 @@
 /**
  * POST /api/billing/webhook
  *
- * Stripe webhook handler. Unauthenticated — verified via HMAC-SHA256 signature.
+ * Razorpay webhook handler. Unauthenticated — verified via HMAC-SHA256 signature.
  *
  * IMPORTANT: This route must bypass Cloudflare Access when deployed to
  * production. Add an Access bypass rule for this path, or configure the route
- * in wrangler.jsonc with a public zone route that skips Access. Stripe cannot
+ * in wrangler.jsonc with a public zone route that skips Access. Razorpay cannot
  * add CF Access JWT headers.
  *
- * Handled events:
- *   - checkout.session.completed  → activate subscription, store customer + sub IDs
- *   - customer.subscription.updated → plan change (upgrade/downgrade/seat change)
- *   - customer.subscription.deleted → downgrade to free, clear subscription ID
- *   - invoice.payment_failed       → set billing_state flag for payment-failed banner
- *   - invoice.paid                 → clear payment-failed flag, confirm active
+ * Signature: Razorpay sets the `X-Razorpay-Signature` header to
+ * HMAC-SHA256(RAZORPAY_WEBHOOK_SECRET, rawBody) as a hex digest. No timestamp
+ * is involved — simpler than Stripe.
  *
- * Idempotency: processed Stripe event IDs are tracked in an in-memory LRU
- * (bounded to 500 entries). This is pragmatic for a single-isolate Worker.
- * A D1-backed dedupe table can replace this if multi-isolate consistency
- * becomes necessary.
+ * Handled events:
+ *   - subscription.authenticated  → log, no-op (user has authorised mandate)
+ *   - subscription.activated      → set plan based on plan_id match
+ *   - subscription.charged        → clear payment_failed flag (successful charge)
+ *   - subscription.halted         → set payment_failed flag
+ *   - subscription.pending        → log, no-op
+ *   - subscription.cancelled      → downgrade to free
+ *   - subscription.completed      → downgrade to free
+ *   - payment.failed              → set payment_failed flag
+ *
+ * Idempotency: processed Razorpay event IDs are tracked in an in-memory LRU
+ * (bounded to 500 entries). Pragmatic for a single-isolate Worker. A D1-backed
+ * dedupe table can replace this if multi-isolate consistency becomes necessary.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { verifyWebhookSignature } from "@/lib/billing/stripe";
+import { verifyWebhookSignature } from "@/lib/billing/razorpay";
 import { getRuntimeEnv } from "@/lib/env";
 import { getDb } from "@/lib/db/client";
-import { updateStripeFields, getByStripeCustomerId } from "@/lib/db/repos/workspaces";
+import {
+  updateRazorpayFields,
+  getByRazorpayCustomerId,
+  getByRazorpaySubscriptionId,
+  getWorkspace,
+} from "@/lib/db/repos/workspaces";
 import { setSetting } from "@/lib/db/repos/settings";
 import type { PlanId } from "@/lib/billing/plans";
 
@@ -48,37 +59,61 @@ function markProcessed(eventId: string): void {
 }
 
 /* --------------------------------------------------------------------------
- * Plan derivation from Stripe price ID
+ * Plan derivation from Razorpay plan ID
  * -------------------------------------------------------------------------- */
 
-async function planFromPriceId(priceId: string): Promise<PlanId> {
+async function planFromPlanId(planId: string): Promise<PlanId> {
   const env = await getRuntimeEnv();
   if (
-    priceId === env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ||
-    priceId === env.STRIPE_PRICE_ID_FREELANCER_ANNUAL
+    planId === env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ||
+    planId === env.RAZORPAY_PLAN_ID_FREELANCER_ANNUAL
   ) {
     return "freelancer";
   }
   if (
-    priceId === env.STRIPE_PRICE_ID_TEAMS_MONTHLY ||
-    priceId === env.STRIPE_PRICE_ID_TEAMS_ANNUAL
+    planId === env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ||
+    planId === env.RAZORPAY_PLAN_ID_TEAMS_ANNUAL
   ) {
     return "teams";
   }
-  // Unknown price — default to freelancer as a safe fallback
-  console.warn(`[billing/webhook] Unknown priceId "${priceId}" — defaulting to freelancer`);
+  // Unknown plan — default to freelancer as a safe fallback
+  console.warn(`[billing/webhook] Unknown planId "${planId}" — defaulting to freelancer`);
   return "freelancer";
 }
 
 /* --------------------------------------------------------------------------
- * Stripe event types (minimal shapes we need)
+ * Razorpay event types (minimal shapes we need)
  * -------------------------------------------------------------------------- */
 
-type StripeEvent = {
-  id: string;
-  type: string;
-  data: {
-    object: Record<string, unknown>;
+type RazorpayEvent = {
+  /** Unique event ID — used for idempotency */
+  event: string;
+  /** ISO timestamp string */
+  created_at: number;
+  entity: string;
+  contains: string[];
+  payload: {
+    subscription?: {
+      entity: {
+        id: string;
+        plan_id: string;
+        customer_id: string | null;
+        status: string;
+        notes: Record<string, string> | null;
+        current_end: number | null;
+        ended_at: number | null;
+      };
+    };
+    payment?: {
+      entity: {
+        id: string;
+        subscription_id: string | null;
+        customer_id: string | null;
+        status: string;
+        error_code: string | null;
+        error_description: string | null;
+      };
+    };
   };
 };
 
@@ -88,143 +123,122 @@ type StripeEvent = {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const env = await getRuntimeEnv();
-  const webhookSecret = env.STRIPE_WEBHOOK_SECRET;
+  const webhookSecret = env.RAZORPAY_WEBHOOK_SECRET;
 
   // Read the raw body — MUST NOT be parsed before signature check
   const rawBody = await request.text();
-  const signature = request.headers.get("stripe-signature") ?? "";
+  const signature = request.headers.get("x-razorpay-signature") ?? "";
 
   // Verify signature
   if (webhookSecret) {
     const valid = await verifyWebhookSignature(rawBody, signature, webhookSecret);
     if (!valid) {
-      console.warn("[billing/webhook] Invalid Stripe signature");
+      console.warn("[billing/webhook] Invalid Razorpay signature");
       return NextResponse.json(
         { error: "Invalid signature" },
         { status: 400 }
       );
     }
   } else if (process.env.NODE_ENV === "production") {
-    console.error("[billing/webhook] STRIPE_WEBHOOK_SECRET not set in production");
+    console.error("[billing/webhook] RAZORPAY_WEBHOOK_SECRET not set in production");
     return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 });
   } else {
-    console.warn("[billing/webhook] Skipping signature check — STRIPE_WEBHOOK_SECRET not set in dev");
+    console.warn("[billing/webhook] Skipping signature check — RAZORPAY_WEBHOOK_SECRET not set in dev");
   }
 
-  let event: StripeEvent;
+  let event: RazorpayEvent;
   try {
-    event = JSON.parse(rawBody) as StripeEvent;
+    event = JSON.parse(rawBody) as RazorpayEvent;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Idempotency check
-  if (hasProcessed(event.id)) {
+  // Idempotency: use event.event + created_at as a dedup key since Razorpay
+  // does not guarantee a globally unique event ID field in all versions.
+  // Using the subscription/payment entity ID + event type provides a stable key.
+  const subEntity = event.payload?.subscription?.entity;
+  const payEntity = event.payload?.payment?.entity;
+  const entityId = subEntity?.id ?? payEntity?.id ?? "unknown";
+  const dedupKey = `${event.event}:${entityId}:${event.created_at}`;
+
+  if (hasProcessed(dedupKey)) {
     return NextResponse.json({ received: true, skipped: "duplicate" });
   }
-  markProcessed(event.id);
+  markProcessed(dedupKey);
 
   const db = await getDb();
-  const obj = event.data.object;
 
   try {
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const customerId = obj.customer as string | null;
-        const subscriptionId = obj.subscription as string | null;
-        const workspaceId = (obj.metadata as Record<string, string> | null)?.workspace_id;
-
-        if (!workspaceId) {
-          console.warn("[billing/webhook] checkout.session.completed missing workspace_id metadata");
-          break;
-        }
-
-        if (customerId && subscriptionId) {
-          // Determine plan from line items if available; otherwise we wait for
-          // customer.subscription.updated which carries full price detail
-          await updateStripeFields(db, workspaceId, {
-            customerId,
-            subscriptionId,
+    switch (event.event) {
+      // -----------------------------------------------------------------------
+      // subscription.authenticated — user has authorised the mandate; not yet charged
+      // -----------------------------------------------------------------------
+      case "subscription.authenticated": {
+        if (!subEntity) break;
+        console.info(
+          `[billing/webhook] subscription.authenticated: sub=${subEntity.id} status=${subEntity.status}`
+        );
+        // Store subscription ID if we can resolve the workspace from notes
+        const workspaceId = subEntity.notes?.workspace_id;
+        if (workspaceId) {
+          await updateRazorpayFields(db, workspaceId, {
+            subscriptionId: subEntity.id,
           });
         }
         break;
       }
 
-      case "customer.subscription.updated": {
-        const customerId = obj.customer as string;
-        const status = obj.status as string;
-        const items = obj.items as { data: Array<{ price: { id: string } }> } | null;
-        const trialEnd = obj.trial_end as number | null;
+      // -----------------------------------------------------------------------
+      // subscription.activated — first payment succeeded, plan is live
+      // -----------------------------------------------------------------------
+      case "subscription.activated": {
+        if (!subEntity) break;
 
-        const workspace = await getByStripeCustomerId(db, customerId);
-        if (!workspace) {
-          console.warn(`[billing/webhook] No workspace for customer ${customerId}`);
-          break;
-        }
-
-        const priceId = items?.data?.[0]?.price?.id;
-        const plan = priceId ? await planFromPriceId(priceId) : undefined;
-
-        const trialEndsAt = trialEnd
-          ? new Date(trialEnd * 1000).toISOString()
+        const workspaceId = subEntity.notes?.workspace_id;
+        let workspace = workspaceId
+          ? await getWorkspace(db, workspaceId)
           : null;
 
-        // On cancellation/lapse, downgrade to free; otherwise apply the plan
-        const resolvedPlan: PlanId =
-          status === "canceled" || status === "unpaid" || status === "past_due"
-            ? "free"
-            : (plan ?? workspace.plan as PlanId);
+        // Fallback: try customer ID if workspace not found via notes
+        if (!workspace && subEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, subEntity.customer_id) ?? null;
+        }
 
-        await updateStripeFields(db, workspace.id, {
-          plan: resolvedPlan,
-          subscriptionId: obj.id as string,
-          trialEndsAt,
-        });
-        break;
-      }
-
-      case "customer.subscription.deleted": {
-        const customerId = obj.customer as string;
-
-        const workspace = await getByStripeCustomerId(db, customerId);
         if (!workspace) {
-          console.warn(`[billing/webhook] No workspace for customer ${customerId}`);
+          console.warn(
+            `[billing/webhook] subscription.activated — could not resolve workspace for sub=${subEntity.id}`
+          );
           break;
         }
 
-        await updateStripeFields(db, workspace.id, {
-          plan: "free",
-          subscriptionId: undefined, // clear subscription reference
-          trialEndsAt: null,
+        const plan = await planFromPlanId(subEntity.plan_id);
+        await updateRazorpayFields(db, workspace.id, {
+          plan,
+          subscriptionId: subEntity.id,
         });
-        break;
-      }
-
-      case "invoice.payment_failed": {
-        const customerId = obj.customer as string;
-
-        const workspace = await getByStripeCustomerId(db, customerId);
-        if (!workspace) {
-          console.warn(`[billing/webhook] No workspace for customer ${customerId}`);
-          break;
-        }
-
-        // Set billing state flag — UI reads this to show a red payment-failed banner
-        // Note: app_settings uses workspace.id as ownerId
+        // Clear any payment-failed state
         await setSetting(db, workspace.id, "billing_state/v1", {
-          paymentFailed: true,
-          failedAt: new Date().toISOString(),
-          invoiceId: obj.id,
+          paymentFailed: false,
+          clearedAt: new Date().toISOString(),
         });
         break;
       }
 
-      case "invoice.paid": {
-        const customerId = obj.customer as string;
+      // -----------------------------------------------------------------------
+      // subscription.charged — recurring charge succeeded
+      // -----------------------------------------------------------------------
+      case "subscription.charged": {
+        if (!subEntity) break;
 
-        const workspace = await getByStripeCustomerId(db, customerId);
+        let workspace = await getByRazorpaySubscriptionId(db, subEntity.id) ?? null;
+        if (!workspace && subEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, subEntity.customer_id) ?? null;
+        }
+
         if (!workspace) {
-          console.warn(`[billing/webhook] No workspace for customer ${customerId}`);
+          console.warn(
+            `[billing/webhook] subscription.charged — could not resolve workspace for sub=${subEntity.id}`
+          );
           break;
         }
 
@@ -236,13 +250,134 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         break;
       }
 
+      // -----------------------------------------------------------------------
+      // subscription.halted — repeated payment failures; subscription halted
+      // -----------------------------------------------------------------------
+      case "subscription.halted": {
+        if (!subEntity) break;
+
+        let workspace = await getByRazorpaySubscriptionId(db, subEntity.id) ?? null;
+        if (!workspace && subEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, subEntity.customer_id) ?? null;
+        }
+
+        if (!workspace) {
+          console.warn(
+            `[billing/webhook] subscription.halted — could not resolve workspace for sub=${subEntity.id}`
+          );
+          break;
+        }
+
+        await setSetting(db, workspace.id, "billing_state/v1", {
+          paymentFailed: true,
+          failedAt: new Date().toISOString(),
+          subscriptionId: subEntity.id,
+        });
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // subscription.pending — payment pending (e.g. bank processing)
+      // -----------------------------------------------------------------------
+      case "subscription.pending": {
+        if (!subEntity) break;
+        console.info(
+          `[billing/webhook] subscription.pending: sub=${subEntity.id} — no action taken`
+        );
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // subscription.cancelled — user or system cancelled
+      // -----------------------------------------------------------------------
+      case "subscription.cancelled": {
+        if (!subEntity) break;
+
+        let workspace = await getByRazorpaySubscriptionId(db, subEntity.id) ?? null;
+        if (!workspace && subEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, subEntity.customer_id) ?? null;
+        }
+
+        if (!workspace) {
+          console.warn(
+            `[billing/webhook] subscription.cancelled — could not resolve workspace for sub=${subEntity.id}`
+          );
+          break;
+        }
+
+        await updateRazorpayFields(db, workspace.id, {
+          plan: "free",
+          subscriptionId: undefined,
+          trialEndsAt: null,
+        });
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // subscription.completed — subscription ran its full term
+      // -----------------------------------------------------------------------
+      case "subscription.completed": {
+        if (!subEntity) break;
+
+        let workspace = await getByRazorpaySubscriptionId(db, subEntity.id) ?? null;
+        if (!workspace && subEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, subEntity.customer_id) ?? null;
+        }
+
+        if (!workspace) {
+          console.warn(
+            `[billing/webhook] subscription.completed — could not resolve workspace for sub=${subEntity.id}`
+          );
+          break;
+        }
+
+        await updateRazorpayFields(db, workspace.id, {
+          plan: "free",
+          subscriptionId: undefined,
+          trialEndsAt: null,
+        });
+        break;
+      }
+
+      // -----------------------------------------------------------------------
+      // payment.failed — individual payment failure (may recover without halting)
+      // -----------------------------------------------------------------------
+      case "payment.failed": {
+        if (!payEntity) break;
+
+        // Try to resolve workspace via subscription ID first
+        let workspace = null;
+        if (payEntity.subscription_id) {
+          workspace = await getByRazorpaySubscriptionId(db, payEntity.subscription_id) ?? null;
+        }
+        if (!workspace && payEntity.customer_id) {
+          workspace = await getByRazorpayCustomerId(db, payEntity.customer_id) ?? null;
+        }
+
+        if (!workspace) {
+          console.warn(
+            `[billing/webhook] payment.failed — could not resolve workspace for payment=${payEntity.id}`
+          );
+          break;
+        }
+
+        await setSetting(db, workspace.id, "billing_state/v1", {
+          paymentFailed: true,
+          failedAt: new Date().toISOString(),
+          paymentId: payEntity.id,
+          errorCode: payEntity.error_code,
+          errorDescription: payEntity.error_description,
+        });
+        break;
+      }
+
       default:
         // Other events are intentionally ignored
         break;
     }
   } catch (err) {
-    console.error(`[billing/webhook] Error handling ${event.type}:`, err);
-    // Return 200 to prevent Stripe from retrying — log and investigate
+    console.error(`[billing/webhook] Error handling ${event.event}:`, err);
+    // Return 200 to prevent Razorpay from retrying — log and investigate
     return NextResponse.json({ received: true, error: (err as Error).message });
   }
 

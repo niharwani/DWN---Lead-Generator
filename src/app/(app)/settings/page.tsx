@@ -65,15 +65,15 @@ export default async function SettingsPage() {
     getRuntimeEnv(),
   ]);
 
-  // Phase E — Next upgradeable plan's price ID (monthly as default)
+  // Phase E — Next upgradeable plan's Razorpay plan ID (monthly as default)
   const currentPlan = owner.workspace.plan as PlanId;
   const planOrder: PlanId[] = ["free", "freelancer", "teams", "studio"];
   const nextUpgradePlanId = planOrder.find((p) => comparePlans(p, currentPlan) > 0) ?? null;
-  const nextPriceIdMap: Partial<Record<PlanId, string>> = {
-    freelancer: env.STRIPE_PRICE_ID_FREELANCER_MONTHLY ?? undefined,
-    teams: env.STRIPE_PRICE_ID_TEAMS_MONTHLY ?? undefined,
+  const nextPlanIdMap: Partial<Record<PlanId, string>> = {
+    freelancer: env.RAZORPAY_PLAN_ID_FREELANCER_MONTHLY ?? undefined,
+    teams: env.RAZORPAY_PLAN_ID_TEAMS_MONTHLY ?? undefined,
   };
-  const nextPriceId = nextUpgradePlanId ? (nextPriceIdMap[nextUpgradePlanId] ?? null) : null;
+  const nextPlanId = nextUpgradePlanId ? (nextPlanIdMap[nextUpgradePlanId] ?? null) : null;
   const nextPlanName = nextUpgradePlanId ? PLANS[nextUpgradePlanId].name : null;
 
   // Phase F data — members, invites, audit log, webhooks
@@ -380,11 +380,11 @@ export default async function SettingsPage() {
         {/* --- Billing (Phase E) --------------------------------------- */}
         <BillingSection
           currentPlan={currentPlan}
-          hasStripeCustomer={!!workspace?.stripeCustomerId}
+          hasRazorpayCustomer={!!workspace?.razorpayCustomerId}
           usage={usage}
           trialEndsAt={workspace?.trialEndsAt ?? null}
           paymentFailed={billingState?.paymentFailed ?? false}
-          nextPriceId={nextPriceId}
+          nextPlanId={nextPlanId}
           nextPlanName={nextPlanName}
         />
 

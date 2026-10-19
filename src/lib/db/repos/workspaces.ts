@@ -85,6 +85,8 @@ export async function getWorkspacesForProfile(
       plan: workspaces.plan,
       stripeCustomerId: workspaces.stripeCustomerId,
       stripeSubscriptionId: workspaces.stripeSubscriptionId,
+      razorpayCustomerId: workspaces.razorpayCustomerId,
+      razorpaySubscriptionId: workspaces.razorpaySubscriptionId,
       trialEndsAt: workspaces.trialEndsAt,
       onboardingState: workspaces.onboardingState,
       industryPreset: workspaces.industryPreset,
@@ -298,10 +300,11 @@ export async function updateBranding(
 }
 
 /* --------------------------------------------------------------------------
- * Phase E — Stripe field helpers (APPEND ONLY — do not modify above)
+ * Phase E — Stripe field helpers (deprecated, kept for backwards compat)
  * -------------------------------------------------------------------------- */
 
 /**
+ * @deprecated Use updateRazorpayFields instead.
  * Update Stripe-related fields on a workspace row.
  * Called by the webhook handler and syncBillingStateAction.
  */
@@ -332,6 +335,7 @@ export async function updateStripeFields(
 }
 
 /**
+ * @deprecated Use getByRazorpayCustomerId instead.
  * Look up a workspace by its Stripe customer ID.
  * Used by the webhook handler to map Stripe events to workspaces.
  */
@@ -343,6 +347,72 @@ export async function getByStripeCustomerId(
     .select()
     .from(workspaces)
     .where(eq(workspaces.stripeCustomerId, customerId))
+    .limit(1);
+  return row;
+}
+
+/* --------------------------------------------------------------------------
+ * Phase E (Razorpay swap) — Razorpay field helpers (APPEND ONLY)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Update Razorpay-related fields on a workspace row.
+ * Called by the checkout route, webhook handler, and syncBillingStateAction.
+ */
+export async function updateRazorpayFields(
+  db: Db,
+  workspaceId: string,
+  fields: {
+    customerId?: string;
+    subscriptionId?: string;
+    trialEndsAt?: string | null;
+    plan?: "free" | "freelancer" | "teams" | "studio";
+  }
+): Promise<Workspace | undefined> {
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { updatedAt: now };
+
+  if (fields.customerId !== undefined) patch.razorpayCustomerId = fields.customerId;
+  if (fields.subscriptionId !== undefined) patch.razorpaySubscriptionId = fields.subscriptionId;
+  if (fields.trialEndsAt !== undefined) patch.trialEndsAt = fields.trialEndsAt;
+  if (fields.plan !== undefined) patch.plan = fields.plan;
+
+  await db
+    .update(workspaces)
+    .set(patch as Partial<typeof workspaces.$inferInsert>)
+    .where(eq(workspaces.id, workspaceId));
+
+  return getWorkspace(db, workspaceId);
+}
+
+/**
+ * Look up a workspace by its Razorpay customer ID.
+ * Used by the webhook handler to map Razorpay events to workspaces.
+ */
+export async function getByRazorpayCustomerId(
+  db: Db,
+  customerId: string
+): Promise<Workspace | undefined> {
+  const [row] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.razorpayCustomerId, customerId))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Look up a workspace by its Razorpay subscription ID.
+ * Used by the webhook handler to map Razorpay events to workspaces.
+ */
+export async function getByRazorpaySubscriptionId(
+  db: Db,
+  subscriptionId: string
+): Promise<Workspace | undefined> {
+  const [row] = await db
+    .select()
+    .from(workspaces)
+    .where(eq(workspaces.razorpaySubscriptionId, subscriptionId))
     .limit(1);
   return row;
 }

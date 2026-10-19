@@ -637,6 +637,9 @@ export const workspaces = sqliteTable(
       .default("free"),
     stripeCustomerId: text("stripe_customer_id"),
     stripeSubscriptionId: text("stripe_subscription_id"),
+    // Phase E (Razorpay swap) — new provider columns
+    razorpayCustomerId: text("razorpay_customer_id"),
+    razorpaySubscriptionId: text("razorpay_subscription_id"),
     trialEndsAt: text("trial_ends_at"),
     onboardingState: text("onboarding_state", { mode: "json" }).$type<{
       step?: string;

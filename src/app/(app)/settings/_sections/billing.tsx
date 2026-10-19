@@ -51,21 +51,21 @@ const METERED_RESOURCES: MeteredResource[] = [
 
 type Props = {
   currentPlan: PlanId;
-  hasStripeCustomer: boolean;
+  hasRazorpayCustomer: boolean;
   usage: WorkspaceUsage | null;
   trialEndsAt: string | null;
   paymentFailed: boolean;
-  nextPriceId: string | null;
+  nextPlanId: string | null;
   nextPlanName: string | null;
 };
 
 export function BillingSection({
   currentPlan,
-  hasStripeCustomer,
+  hasRazorpayCustomer,
   usage,
   trialEndsAt,
   paymentFailed,
-  nextPriceId,
+  nextPlanId,
   nextPlanName,
 }: Props) {
   const [loading, setLoading] = useState<"checkout" | "portal" | null>(null);
@@ -83,14 +83,14 @@ export function BillingSection({
   const nextUpgradePlanId = planOrder.find((p) => comparePlans(p, currentPlan) > 0) ?? null;
 
   async function handleCheckout() {
-    if (!nextPriceId) return;
+    if (!nextPlanId) return;
     setLoading("checkout");
     setError(null);
     try {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ priceId: nextPriceId }),
+        body: JSON.stringify({ planId: nextPlanId }),
       });
       const data = (await res.json()) as { url?: string; error?: { message: string } };
       if (!res.ok || !data.url) {
@@ -105,22 +105,8 @@ export function BillingSection({
     }
   }
 
-  async function handlePortal() {
-    setLoading("portal");
-    setError(null);
-    try {
-      const res = await fetch("/api/billing/portal", { method: "POST" });
-      const data = (await res.json()) as { url?: string; error?: { message: string } };
-      if (!res.ok || !data.url) {
-        setError(data.error?.message ?? "Portal unavailable.");
-        return;
-      }
-      window.location.href = data.url;
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setLoading(null);
-    }
+  function handleManage() {
+    window.location.href = "/billing/manage";
   }
 
   return (
@@ -154,7 +140,11 @@ export function BillingSection({
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <div>
               <strong>Payment failed.</strong> Your workspace will lose paid features after a
-              7-day grace period. Please update your payment method via the Customer Portal.
+              7-day grace period. Please{" "}
+              <a href="/billing/manage" className="underline hover:no-underline">
+                manage your subscription
+              </a>{" "}
+              to resolve the issue.
             </div>
           </div>
         )}
@@ -239,25 +229,24 @@ export function BillingSection({
             <Button
               variant="primary"
               size="sm"
-              disabled={loading === "checkout" || !nextPriceId}
+              disabled={loading === "checkout" || !nextPlanId}
               onClick={handleCheckout}
             >
               {loading === "checkout"
                 ? "Redirecting…"
-                : nextPriceId
+                : nextPlanId
                 ? `Upgrade to ${PLANS[nextUpgradePlanId].name}`
                 : `Upgrade to ${nextPlanName ?? PLANS[nextUpgradePlanId].name}`}
             </Button>
           )}
 
-          {hasStripeCustomer && (
+          {hasRazorpayCustomer && (
             <Button
               variant="secondary"
               size="sm"
-              disabled={loading === "portal"}
-              onClick={handlePortal}
+              onClick={handleManage}
             >
-              {loading === "portal" ? "Opening…" : "Manage subscription"}
+              Manage subscription
             </Button>
           )}
 

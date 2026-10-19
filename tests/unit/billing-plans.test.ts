@@ -111,15 +111,15 @@ describe("numeric fields are null (pre-launch)", () => {
     expect(PLANS.studio.priceAnnualUsd).toBeNull();
   });
 
-  it("stripePriceIdMonthly is null for all plans", () => {
+  it("razorpayPlanIdMonthly is null for all plans", () => {
     for (const planId of ALL_PLAN_IDS) {
-      expect(PLANS[planId].stripePriceIdMonthly).toBeNull();
+      expect(PLANS[planId].razorpayPlanIdMonthly).toBeNull();
     }
   });
 
-  it("stripePriceIdAnnual is null for all plans", () => {
+  it("razorpayPlanIdAnnual is null for all plans", () => {
     for (const planId of ALL_PLAN_IDS) {
-      expect(PLANS[planId].stripePriceIdAnnual).toBeNull();
+      expect(PLANS[planId].razorpayPlanIdAnnual).toBeNull();
     }
   });
 
