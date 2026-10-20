@@ -10,7 +10,7 @@
  * here are intentionally similar so grep-and-replace is straightforward.
  */
 
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { getDb } from "@/lib/db/client";
 import { getOwner, type Owner } from "@/lib/auth/session";
 import * as repos from "@/lib/db/repos";
@@ -25,14 +25,13 @@ import type { LeadFilter, LeadSortKey } from "@/lib/db/repos";
 import type { CampaignMetrics } from "@/lib/db/repos";
 
 /**
- * Server-component auth gate. Returns the owner or renders the 404 page.
- * We use notFound() rather than a redirect so there's no sign-in surface in
- * Phase 2 to design — Access gates at the edge in production, and the dev
- * bypass means a local run always has an owner.
+ * Server-component auth gate. Returns the owner or redirects to /login.
+ * Previously used notFound() because Cloudflare Access gated at the edge;
+ * Access was removed on 2026-10-20, so the app now handles the redirect.
  */
 export async function requirePageOwner(): Promise<Owner> {
   const owner = await getOwner();
-  if (!owner) notFound();
+  if (!owner) redirect("/login");
   return owner;
 }
 
