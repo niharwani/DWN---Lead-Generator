@@ -1,14 +1,16 @@
 /**
- * Server-side auth entry point (Phase A rewrite).
+ * Server-side auth entry point.
  *
  * Resolution order for `getOwner()`:
  *   1. Session cookie `sl_sid` → sessions row → active_workspace_id (or first
  *      workspace from workspace_members).
- *   2. If no session cookie but `Cf-Access-Jwt-Assertion` is present (DWN prod
- *      shim), verify the JWT → resolve profile → first workspace. Auto-mints a
- *      session so subsequent requests use path (1).
- *   3. Dev bypass: `DEV_OWNER_EMAIL` in non-production environments. Resolves
+ *   2. Dev bypass: `DEV_OWNER_EMAIL` in non-production environments. Resolves
  *      profile → first workspace. Does NOT auto-mint a session (stateless dev).
+ *
+ * The CF Access JWT shim was removed on 2026-10-19 when Access was taken off
+ * the Worker. Without Access stripping headers at the edge, trusting
+ * `cf-access-*` headers would be a forgery hole. If Access is re-enabled
+ * later, restore the shim from git history (commit before this one).
  *
  * The returned `Owner.id` equals the current workspace_id. Every repo call
  * that takes `ownerId` receives this value — existing repos stay untouched.
@@ -18,9 +20,8 @@ import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { profiles, sessions } from "@/lib/db/schema";
-import { verifyAccessJwt } from "./access";
-import { readSessionCookie, setSessionCookie } from "./sessions";
-import { createSession, updateSessionLastUsed } from "@/lib/db/repos/sessions";
+import { readSessionCookie } from "./sessions";
+import { updateSessionLastUsed } from "@/lib/db/repos/sessions";
 import { getWorkspacesForProfile } from "@/lib/db/repos/workspaces";
 
 export type Owner = {
@@ -119,35 +120,14 @@ async function resolveProfileToOwner(
  * -------------------------------------------------------------------------- */
 
 /**
- * Read identity from the current request (CF Access or dev bypass only).
- * Used internally and by legacy callers. For workspace-aware auth use `getOwner()`.
+ * Legacy identity reader. Only honors the dev bypass; CF Access shim removed.
+ * For workspace-aware auth use `getOwner()`.
  */
 export async function getIdentity(): Promise<{ email: string; name?: string } | null> {
-  const h = await headers();
-  const jwt = h.get("cf-access-jwt-assertion");
-  const accessEmail = h.get("cf-access-authenticated-user-email");
-
-  if (jwt) {
-    const teamDomain = process.env.CF_ACCESS_TEAM_DOMAIN;
-    const audience = process.env.CF_ACCESS_AUD;
-    if (teamDomain && audience) {
-      try {
-        const identity = await verifyAccessJwt(jwt, teamDomain, audience);
-        return { email: identity.email, name: identity.name };
-      } catch (err) {
-        console.warn("Access JWT verification failed; falling back to Access email header", {
-          reason: (err as Error).message,
-        });
-      }
-    }
-    if (accessEmail) return { email: accessEmail };
-  }
-
   if (process.env.NODE_ENV !== "production") {
     const devEmail = process.env.DEV_OWNER_EMAIL;
     if (devEmail) return { email: devEmail, name: "Dev Owner" };
   }
-
   return null;
 }
 
@@ -193,54 +173,7 @@ export async function getOwner(): Promise<Owner | null> {
     }
   }
 
-  // --- Path 2: CF Access JWT shim (DWN prod backwards compat) ---
-  const h = await headers();
-  const jwt = h.get("cf-access-jwt-assertion");
-  const accessEmail = h.get("cf-access-authenticated-user-email");
-
-  let cfEmail: string | null = null;
-
-  if (jwt) {
-    const teamDomain = process.env.CF_ACCESS_TEAM_DOMAIN;
-    const audience = process.env.CF_ACCESS_AUD;
-    if (teamDomain && audience) {
-      try {
-        const identity = await verifyAccessJwt(jwt, teamDomain, audience);
-        cfEmail = identity.email;
-      } catch {
-        if (accessEmail) cfEmail = accessEmail;
-      }
-    } else if (accessEmail) {
-      cfEmail = accessEmail;
-    }
-  }
-
-  if (cfEmail) {
-    const owner = await resolveProfileToOwner(cfEmail);
-    if (owner) {
-      // Auto-mint a session for the CF Access user so future requests use path 1
-      try {
-        const reqHeaders = h;
-        const ipAddress =
-          reqHeaders.get("cf-connecting-ip") ??
-          reqHeaders.get("x-forwarded-for") ??
-          undefined;
-        const userAgent = reqHeaders.get("user-agent") ?? undefined;
-        const newSession = await createSession(db, {
-          profileId: owner.profileId,
-          activeWorkspaceId: owner.workspace.id,
-          ipAddress,
-          userAgent,
-        });
-        await setSessionCookie(newSession.id);
-      } catch {
-        // Non-fatal: CF Access path still works without a session
-      }
-      return owner;
-    }
-  }
-
-  // --- Path 3: Dev bypass ---
+  // --- Path 2: Dev bypass ---
   if (process.env.NODE_ENV !== "production") {
     const devEmail = process.env.DEV_OWNER_EMAIL;
     if (devEmail) {
