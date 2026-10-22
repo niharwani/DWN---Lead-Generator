@@ -14,28 +14,23 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
-import {
-  pageListCampaigns,
-  pageListCrawlJobs,
-  pageWebSearchStatus,
-} from "@/lib/data";
+import { pageListCampaigns, pageListCrawlJobs } from "@/lib/data";
 import { runIntelCrawlAction } from "@/lib/actions";
 import { formatRelative } from "@/lib/demo/format";
 
 export const metadata: Metadata = { title: "Web Intelligence" };
 
 export default async function WebIntelligencePage() {
-  const [jobs, campaigns, searchStatus] = await Promise.all([
+  const [jobs, campaigns] = await Promise.all([
     pageListCrawlJobs(25),
     pageListCampaigns(),
-    pageWebSearchStatus(),
   ]);
 
   return (
     <>
       <PageHeader
         title="Web Intelligence"
-        description="Discover companies via authorized web search, crawl their public sites, and extract corporate intel into the lead database. SSRF-hardened, deduped by canonical domain, and additive — never overwrites verified lead data."
+        description="Paste a company URL and the crawler visits public corporate pages — About, Team, Contact, Services, Products — then extracts intel into the lead database. SSRF-hardened, deduped by canonical domain, and additive — never overwrites verified lead data."
       />
 
       <div className="grid gap-4 lg:grid-cols-5">
@@ -44,7 +39,7 @@ export default async function WebIntelligencePage() {
             <div>
               <CardTitle>New crawl</CardTitle>
               <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
-                Paste a company URL or pick one from a web search. The crawler visits public corporate pages
+                Paste a company URL. The crawler visits public corporate pages
                 (About, Team, Contact, Services, Products…) under a strict page / depth / byte budget.
               </p>
             </div>
@@ -137,11 +132,6 @@ export default async function WebIntelligencePage() {
                 name="Web crawler"
                 status="ready"
                 description="SSRF-hardened fetch · bounded (byte cap, timeout, max redirects) · reuses the website audit engine."
-              />
-              <ProviderStatus
-                name="Brave Search API"
-                status={searchStatus}
-                description="Authorized web-search provider for company discovery. Set BRAVE_SEARCH_API_KEY to enable."
               />
             </CardBody>
           </Card>

@@ -356,10 +356,3 @@ export async function pageListPeopleForLead(leadId: string) {
   return repos.listPeopleForLead(db, owner.id, leadId);
 }
 
-export async function pageWebSearchStatus() {
-  await requirePageOwner();
-  const { getRuntimeEnv } = await import("@/lib/env");
-  const { webSearchProviderStatus } = await import("@/lib/intel/search");
-  const env = await getRuntimeEnv();
-  return webSearchProviderStatus(env);
-}
