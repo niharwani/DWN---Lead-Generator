@@ -2962,3 +2962,197 @@ export async function adminStopImpersonationAction(
   await requireSuperAdmin();
   // See note in adminStartImpersonationAction — URL-state only for now.
 }
+
+/* -----------------------------------------------------------------
+ * Web Intelligence module — discover-and-crawl actions.
+ *
+ * These actions sit alongside `runDiscoveryAction`. The crawl runs inline in
+ * the same request, bounded by maxPages/maxDepth/totalBudgetMs. Progress is
+ * streamed into D1 via the onPage callback inside the runner, so the next
+ * render (or the /api/intel/jobs/[id] endpoint) sees per-page records as
+ * they land.
+ * ----------------------------------------------------------------- */
+
+const intelCrawlSchema = z.object({
+  seedUrl: z
+    .string()
+    .trim()
+    .min(1, "Seed URL is required.")
+    .max(2000)
+    .transform((v) => (/^https?:\/\//i.test(v) ? v : `https://${v}`)),
+  seedLabel: z.string().trim().max(200).optional(),
+  niche: z.string().trim().max(120).optional(),
+  city: z.string().trim().max(120).optional(),
+  region: z.string().trim().max(120).optional(),
+  country: z.string().trim().max(120).optional(),
+  maxPages: z
+    .string()
+    .regex(/^\d+$/)
+    .transform(Number)
+    .refine((n) => n > 0 && n <= 50, "Max pages must be 1–50.")
+    .optional(),
+  maxDepth: z
+    .string()
+    .regex(/^\d+$/)
+    .transform(Number)
+    .refine((n) => n >= 0 && n <= 3, "Depth must be 0–3.")
+    .optional(),
+  campaignId: z.string().optional(),
+});
+
+export async function runIntelCrawlAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, intelCrawlSchema);
+
+  try {
+    assertWithinRateLimit(owner.id, "intel_crawl");
+  } catch (err) {
+    if (err instanceof RateLimitError) {
+      throw new Error(err.message);
+    }
+    throw err;
+  }
+
+  // Validate the URL goes through the same SSRF guard as audits before we
+  // write a job row — bad input shouldn't leave an orphaned "failed" job.
+  const { validateUrlForFetch } = await import("@/lib/audit/ssrf");
+  const check = validateUrlForFetch(input.seedUrl);
+  if (!check.ok) {
+    throw new Error(`Seed URL rejected by SSRF policy: ${check.reason}`);
+  }
+
+  const { createCrawlJob } = await import("@/lib/db/repos/intel");
+  const { runIntelJob } = await import("@/lib/intel/runner");
+
+  const maxPages = input.maxPages ?? 15;
+  const maxDepth = input.maxDepth ?? 2;
+  const env = await getRuntimeEnv();
+
+  const job = await createCrawlJob(db, owner.id, {
+    seedUrl: input.seedUrl,
+    seedLabel: input.seedLabel ?? null,
+    niche: input.niche ?? "",
+    city: input.city ?? null,
+    region: input.region ?? null,
+    country: input.country ?? "India",
+    maxPages,
+    maxDepth,
+    perDomainCap: maxPages,
+    campaignId: input.campaignId ?? null,
+    status: "queued",
+  });
+
+  try {
+    await runIntelJob(db, {
+      jobId: job.id,
+      ownerId: owner.id,
+      input: {
+        seedUrl: input.seedUrl,
+        seedLabel: input.seedLabel,
+        niche: input.niche,
+        city: input.city,
+        region: input.region,
+        country: input.country,
+        maxPages,
+        maxDepth,
+      },
+      crawlOptions: {
+        maxPages,
+        maxDepth,
+        perDomainCap: maxPages,
+        // Opt-in JS rendering fallback — a no-op when CLOUDFLARE_API_TOKEN /
+        // CLOUDFLARE_ACCOUNT_ID aren't configured.
+        renderEnv: env,
+      },
+    });
+  } catch (err) {
+    // Job state is already updated to failed inside the runner. Re-throw a
+    // user-facing message so the Next.js error boundary shows something useful.
+    throw new Error(`Crawl failed: ${(err as Error).message}`);
+  }
+
+  revalidatePath("/intelligence");
+  revalidatePath("/leads");
+  revalidatePath("/overview");
+  redirect(`/intelligence/${job.id}`);
+}
+
+const intelCancelSchema = z.object({ jobId: z.string().min(1) });
+
+export async function cancelIntelCrawlAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, intelCancelSchema);
+  const { cancelIntelJob } = await import("@/lib/intel/runner");
+  await cancelIntelJob(db, owner.id, input.jobId);
+  revalidatePath("/intelligence");
+  revalidatePath(`/intelligence/${input.jobId}`);
+}
+
+const intelRecrawlSchema = z.object({ leadId: z.string().min(1) });
+
+export async function recrawlLeadAction(formData: FormData): Promise<void> {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  const input = parseFormOrThrow(formData, intelRecrawlSchema);
+
+  const lead = await getLead(db, owner.id, input.leadId);
+  if (!lead) throw new Error("Lead not found.");
+  if (!lead.websiteUrl) {
+    throw new Error("This lead has no website URL — add one before re-crawling.");
+  }
+
+  try {
+    assertWithinRateLimit(owner.id, "intel_crawl");
+  } catch (err) {
+    if (err instanceof RateLimitError) throw new Error(err.message);
+    throw err;
+  }
+
+  const { createCrawlJob } = await import("@/lib/db/repos/intel");
+  const { runIntelJob } = await import("@/lib/intel/runner");
+  const env = await getRuntimeEnv();
+
+  const job = await createCrawlJob(db, owner.id, {
+    seedUrl: lead.websiteUrl,
+    seedLabel: lead.businessName,
+    leadId: lead.id,
+    niche: lead.niche,
+    city: lead.city,
+    region: lead.region ?? null,
+    country: lead.country ?? "India",
+    maxPages: 15,
+    maxDepth: 2,
+    perDomainCap: 15,
+    status: "queued",
+  });
+
+  try {
+    await runIntelJob(db, {
+      jobId: job.id,
+      ownerId: owner.id,
+      input: {
+        seedUrl: lead.websiteUrl,
+        seedLabel: lead.businessName,
+        niche: lead.niche,
+        city: lead.city,
+        region: lead.region ?? undefined,
+        country: lead.country,
+        maxPages: 15,
+        maxDepth: 2,
+      },
+      crawlOptions: {
+        // Opt-in JS rendering fallback — a no-op when CLOUDFLARE_API_TOKEN /
+        // CLOUDFLARE_ACCOUNT_ID aren't configured.
+        renderEnv: env,
+      },
+    });
+  } catch (err) {
+    throw new Error(`Crawl failed: ${(err as Error).message}`);
+  }
+
+  revalidatePath("/intelligence");
+  revalidatePath(`/leads/${lead.id}`);
+  redirect(`/intelligence/${job.id}`);
+}

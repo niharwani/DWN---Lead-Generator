@@ -27,6 +27,8 @@ export const BUCKETS = {
   invite_send: { limit: 20, windowMs: 3_600_000 }, // 20 invites / hour / workspace
   // Waitlist (pre-billing soft-launch)
   waitlist: { limit: 10, windowMs: 3_600_000 }, // 10 waitlist submissions / hour / IP
+  // Web Intelligence (crawler) — bounded jobs can still be spammed; keep conservative.
+  intel_crawl: { limit: 5, windowMs: 60_000 }, // 5 crawl jobs / minute / owner
 } as const satisfies Record<string, Bucket>;
 
 export type BucketName = keyof typeof BUCKETS;

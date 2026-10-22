@@ -8,8 +8,14 @@ import type { AdapterCapability, LeadSourceAdapter } from "./types";
 import { manualAdapter } from "./manual";
 import { csvAdapter } from "./csv";
 import { placesAdapter } from "./places";
+import { webSearchAdapter } from "./web-search";
 
-const ADAPTERS: LeadSourceAdapter[] = [manualAdapter, csvAdapter, placesAdapter];
+const ADAPTERS: LeadSourceAdapter[] = [
+  manualAdapter,
+  csvAdapter,
+  placesAdapter,
+  webSearchAdapter,
+];
 
 export function listAdapters(): LeadSourceAdapter[] {
   return ADAPTERS;

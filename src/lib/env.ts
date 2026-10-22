@@ -46,6 +46,11 @@ const EXPOSED_KEYS = [
   "GEMINI_API_KEY",
   "GEMINI_MODEL_DRAFT",
   "GEMINI_MODEL_CLASSIFIER",
+  // Web Intelligence module — authorized web search provider
+  "BRAVE_SEARCH_API_KEY",
+  // Web Intelligence module — optional JS rendering fallback
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_ACCOUNT_ID",
 ] as const;
 
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {

@@ -8,6 +8,7 @@ import {
   ListChecks,
   BarChart3,
   Settings,
+  Globe,
 } from "lucide-react";
 
 export type NavItem = {
@@ -30,6 +31,13 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/discover",
     icon: Search,
     description: "Run a discovery job against configured sources.",
+  },
+  {
+    label: "Web Intelligence",
+    href: "/intelligence",
+    icon: Globe,
+    description:
+      "Discover companies, crawl eligible websites, and extract corporate intel.",
   },
   {
     label: "Leads",

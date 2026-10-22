@@ -987,3 +987,189 @@ export const waitlist = sqliteTable(
 
 export type WaitlistEntry = typeof waitlist.$inferSelect;
 export type NewWaitlistEntry = typeof waitlist.$inferInsert;
+
+/* --------------------------------------------------------------------------
+ * crawl_jobs — Web Intelligence module (migration 0007)
+ *
+ * One row per discover-and-crawl run. Mirrors discovery_jobs' status taxonomy
+ * but keeps crawl-specific knobs. Owner-scoped — repository functions filter
+ * server-side.
+ * -------------------------------------------------------------------------- */
+export const crawlJobs = sqliteTable(
+  "crawl_jobs",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    campaignId: text("campaign_id").references(() => campaigns.id, {
+      onDelete: "set null",
+    }),
+    leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+    seedUrl: text("seed_url").notNull(),
+    seedLabel: text("seed_label"),
+    niche: text("niche").notNull().default(""),
+    city: text("city"),
+    region: text("region"),
+    country: text("country").notNull().default("India"),
+    maxPages: integer("max_pages").notNull().default(20),
+    maxDepth: integer("max_depth").notNull().default(2),
+    perDomainCap: integer("per_domain_cap").notNull().default(20),
+    status: text("status", {
+      enum: ["queued", "running", "completed", "partial", "failed", "cancelled"],
+    })
+      .notNull()
+      .default("queued"),
+    pagesFetched: integer("pages_fetched").notNull().default(0),
+    pagesFailed: integer("pages_failed").notNull().default(0),
+    peopleFound: integer("people_found").notNull().default(0),
+    findingsCount: integer("findings_count").notNull().default(0),
+    errorSummary: text("error_summary"),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    ownerIdx: index("crawl_jobs_owner_idx").on(t.ownerId),
+    statusIdx: index("crawl_jobs_owner_status_idx").on(t.ownerId, t.status),
+    leadIdx: index("crawl_jobs_lead_idx").on(t.leadId),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * crawl_pages — per-URL fetch record
+ * -------------------------------------------------------------------------- */
+export const crawlPages = sqliteTable(
+  "crawl_pages",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => crawlJobs.id, { onDelete: "cascade" }),
+    leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+    url: text("url").notNull(),
+    finalUrl: text("final_url"),
+    discoveredVia: text("discovered_via", {
+      enum: ["seed", "link", "sitemap", "search"],
+    })
+      .notNull()
+      .default("seed"),
+    depth: integer("depth").notNull().default(0),
+    status: text("status", {
+      enum: ["queued", "fetched", "skipped", "blocked", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    httpStatus: integer("http_status"),
+    contentType: text("content_type"),
+    bytes: integer("bytes"),
+    elapsedMs: integer("elapsed_ms"),
+    title: text("title"),
+    errorStage: text("error_stage"),
+    errorReason: text("error_reason"),
+    fetchedAt: text("fetched_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    jobIdx: index("crawl_pages_job_idx").on(t.jobId),
+    leadIdx: index("crawl_pages_lead_idx").on(t.leadId),
+    jobUrlIdx: uniqueIndex("crawl_pages_job_url_idx").on(t.jobId, t.url),
+  })
+);
+
+/* --------------------------------------------------------------------------
+ * extracted_people — publicly-documented decision-makers
+ * -------------------------------------------------------------------------- */
+export const extractedPeople = sqliteTable(
+  "extracted_people",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    leadId: text("lead_id")
+      .notNull()
+      .references(() => leads.id, { onDelete: "cascade" }),
+    jobId: text("job_id").references(() => crawlJobs.id, {
+      onDelete: "set null",
+    }),
+    fullName: text("full_name").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    jobTitle: text("job_title"),
+    profileUrl: text("profile_url"),
+    sourceUrl: text("source_url").notNull(),
+    evidence: text("evidence", { mode: "json" }).$type<Record<string, unknown>>(),
+    confidence: text("confidence", { enum: ["low", "medium", "high"] })
+      .notNull()
+      .default("medium"),
+    observedAt: text("observed_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    ownerIdx: index("extracted_people_owner_idx").on(t.ownerId),
+    leadIdx: index("extracted_people_lead_idx").on(t.leadId),
+    leadNameIdx: uniqueIndex("extracted_people_lead_name_idx").on(
+      t.leadId,
+      t.normalizedName
+    ),
+  })
+);
+
+export type CrawlJob = typeof crawlJobs.$inferSelect;
+export type NewCrawlJob = typeof crawlJobs.$inferInsert;
+export type CrawlPage = typeof crawlPages.$inferSelect;
+export type NewCrawlPage = typeof crawlPages.$inferInsert;
+export type ExtractedPerson = typeof extractedPeople.$inferSelect;
+export type NewExtractedPerson = typeof extractedPeople.$inferInsert;
+
+/* --------------------------------------------------------------------------
+ * crawl_snapshots — change detection + R2 HTML archive (migration 0008)
+ *
+ * One row per crawled URL per crawl, with a stable hash on normalized visible
+ * text and an optional R2 object key. On recrawl, the runner diffs against
+ * the latest prior snapshot for that URL and emits an `intel_content_changed`
+ * finding if the hash differs — useful qualification signal (a company
+ * redesigning their site is often in-market for help).
+ *
+ * `job_id` has a SQL-level FK to `crawl_jobs(id)` in migration 0008 but the
+ * Drizzle definition skips `.references()` so this table's typing doesn't
+ * depend on sibling-migration state during generation.
+ * -------------------------------------------------------------------------- */
+export const crawlSnapshots = sqliteTable(
+  "crawl_snapshots",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    leadId: text("lead_id").references(() => leads.id, { onDelete: "cascade" }),
+    jobId: text("job_id"),
+    url: text("url").notNull(),
+    contentHash: text("content_hash").notNull(),
+    title: text("title"),
+    r2Key: text("r2_key"),
+    bytes: integer("bytes"),
+    observedAt: text("observed_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => ({
+    ownerLeadIdx: index("crawl_snapshots_owner_lead_idx").on(t.ownerId, t.leadId),
+    ownerUrlObservedIdx: index("crawl_snapshots_owner_url_observed_idx").on(
+      t.ownerId,
+      t.url,
+      t.observedAt
+    ),
+  })
+);
+
+export type CrawlSnapshot = typeof crawlSnapshots.$inferSelect;
+export type NewCrawlSnapshot = typeof crawlSnapshots.$inferInsert;

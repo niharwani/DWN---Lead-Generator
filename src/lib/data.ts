@@ -327,3 +327,39 @@ export async function pageAdapterCapabilities() {
     status,
   }));
 }
+
+/* -----------------------------------------------------------------
+ * Web Intelligence
+ * ----------------------------------------------------------------- */
+
+export async function pageListCrawlJobs(limit = 50) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.listCrawlJobs(db, owner.id, limit);
+}
+
+export async function pageGetCrawlJob(id: string) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.getCrawlJob(db, owner.id, id);
+}
+
+export async function pageListCrawlPages(jobId: string) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.listCrawlPages(db, owner.id, jobId);
+}
+
+export async function pageListPeopleForLead(leadId: string) {
+  const owner = await requirePageOwner();
+  const db = await getDb();
+  return repos.listPeopleForLead(db, owner.id, leadId);
+}
+
+export async function pageWebSearchStatus() {
+  await requirePageOwner();
+  const { getRuntimeEnv } = await import("@/lib/env");
+  const { webSearchProviderStatus } = await import("@/lib/intel/search");
+  const env = await getRuntimeEnv();
+  return webSearchProviderStatus(env);
+}

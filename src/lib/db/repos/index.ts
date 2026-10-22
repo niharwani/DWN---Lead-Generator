@@ -25,3 +25,7 @@ export * from "./workspaces";
 export * from "./sessions";
 // Waitlist (pre-billing)
 export * from "./waitlist";
+// Web Intelligence module (crawl_jobs, crawl_pages, extracted_people)
+export * from "./intel";
+// Web Intelligence module — crawl_snapshots (change detection + R2 archive)
+export * from "./intel-snapshots";

@@ -110,6 +110,8 @@ export const SOURCE_LABEL: Record<string, string> = {
   manual: "Manual",
   csv_import: "CSV import",
   google_places: "Google Places",
+  web_search: "Web search (Brave)",
+  web_intel: "Web Intelligence crawl",
 };
 
 export function sourceLabel(id: string): string {

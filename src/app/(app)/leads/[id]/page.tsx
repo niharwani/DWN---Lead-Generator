@@ -33,6 +33,7 @@ import {
   logReplyAction,
   markContactedAction,
   runAuditAction,
+  recrawlLeadAction,
   scoreLeadAction,
   toggleDoNotContactAction,
   assignLeadAction,
@@ -50,6 +51,7 @@ import {
   pageListActivities,
   pageListBriefs,
   pageListDrafts,
+  pageListPeopleForLead,
   pageListTasks,
   requirePageOwner,
 } from "@/lib/data";
@@ -98,12 +100,13 @@ export default async function LeadDetailPage({
   const lead = await pageGetLead(id);
   if (!lead) notFound();
 
-  const [audit, briefs, drafts, activities, allTasks] = await Promise.all([
+  const [audit, briefs, drafts, activities, allTasks, people] = await Promise.all([
     pageLatestAudit(lead.id),
     pageListBriefs(lead.id),
     pageListDrafts({ leadId: lead.id }),
     pageListActivities({ leadId: lead.id }),
     pageListTasks(),
+    pageListPeopleForLead(lead.id),
   ]);
   const brief = briefs[0];
   const tasks = allTasks.filter((t) => t.leadId === lead.id);
@@ -274,6 +277,11 @@ export default async function LeadDetailPage({
             audit={audit}
             leadId={lead.id}
             canAudit={Boolean(lead.websiteUrl)}
+          />
+          <WebIntelligenceSection
+            leadId={lead.id}
+            people={people}
+            hasWebsite={Boolean(lead.websiteUrl)}
           />
           <OpportunityBriefSection
             brief={brief}
@@ -1416,6 +1424,113 @@ function OutcomeSection({ lead }: { lead: import("@/lib/demo/types").Lead }) {
             conversation reaches a conclusion.
           </p>
         )}
+      </CardBody>
+    </Card>
+  );
+}
+
+function WebIntelligenceSection({
+  leadId,
+  people,
+  hasWebsite,
+}: {
+  leadId: string;
+  people: Array<import("@/lib/db/schema").ExtractedPerson>;
+  hasWebsite: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle>Web Intelligence</CardTitle>
+          <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">
+            Publicly documented decision-makers extracted from the company's own site. Each is
+            cited to the exact page URL — nothing is inferred.
+          </p>
+        </div>
+        {hasWebsite ? (
+          <ActionButton
+            action={recrawlLeadAction}
+            hiddenFields={{ leadId }}
+            variant="secondary"
+            size="sm"
+            title="Re-crawl the company website and extract fresh intel."
+          >
+            {people.length > 0 ? "Re-crawl" : "Discover people"}
+          </ActionButton>
+        ) : null}
+      </CardHeader>
+      <CardBody>
+        {people.length === 0 ? (
+          <EmptyState
+            icon={<Flag className="h-4 w-4" />}
+            title="No decision-makers extracted yet"
+            description={
+              hasWebsite
+                ? "Run a crawl to search the company's About, Team, and Leadership pages for publicly-listed decision-makers."
+                : "Add a website URL to this lead first, then run a crawl."
+            }
+          />
+        ) : (
+          <ul className="space-y-2">
+            {people.map((p) => (
+              <li
+                key={p.id}
+                className="flex items-start justify-between gap-2 rounded-sm border border-[var(--color-border)] p-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-[var(--color-text)]">
+                      {p.fullName}
+                    </span>
+                    <span
+                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                        p.confidence === "high"
+                          ? "bg-[var(--color-success-100)] text-[var(--color-success-700)]"
+                          : p.confidence === "medium"
+                            ? "bg-[var(--color-info-100)] text-[var(--color-info-700)]"
+                            : "bg-[var(--color-neutral-100)] text-[var(--color-text-muted)]"
+                      }`}
+                    >
+                      {p.confidence}
+                    </span>
+                  </div>
+                  {p.jobTitle ? (
+                    <p className="text-xs text-[var(--color-text-muted)]">{p.jobTitle}</p>
+                  ) : null}
+                  {p.profileUrl ? (
+                    <a
+                      href={p.profileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-[var(--color-accent-700)] hover:underline"
+                    >
+                      Profile
+                      <ExternalLink aria-hidden className="h-3 w-3" />
+                    </a>
+                  ) : null}
+                </div>
+                <a
+                  href={p.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1 text-[11px] text-[var(--color-text-subtle)] hover:text-[var(--color-text)]"
+                  title={p.sourceUrl}
+                >
+                  Source
+                  <ExternalLink aria-hidden className="h-3 w-3" />
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-3 text-[11px] text-[var(--color-text-subtle)]">
+          Full crawl history and page-by-page diagnostics live under{" "}
+          <Link href="/intelligence" className="text-[var(--color-accent-700)] hover:underline">
+            Web Intelligence
+          </Link>
+          .
+        </p>
       </CardBody>
     </Card>
   );
